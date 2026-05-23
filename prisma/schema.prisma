@@ -1,0 +1,187 @@
+// Solo Gestoría — Spanish autónomo bookkeeping
+// Single-tenant SQLite schema. Money stored as integer cents to avoid float drift.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// Singleton (id = 1). Stores issuer/company info, defaults, deduction rules.
+model Settings {
+  id                   Int      @id @default(1)
+  // Issuer identity
+  issuerName           String
+  issuerTaxId          String   // NIF / DNI / NIE — Spanish tax ID
+  issuerVatId          String   // VAT ID with country prefix, e.g. "ES" + NIF
+  issuerAddressLine    String
+  issuerPostalCode     String
+  issuerCity           String
+  issuerProvince       String
+  issuerCountry        String
+  issuerEmail          String?
+  // Bank details
+  bankName             String
+  bankIban             String
+  bankSwift            String
+  bankAddress          String?
+  // Defaults
+  defaultHourlyRateCents  Int    @default(9200)   // €92.00
+  defaultLineDescription  String @default("Solution Architect Software Development")
+  vatExemptionFootnote    String @default("Invoice exempt from VAT pursuant to Directive 2006/112/EC and art. 25 of VAT Law 37/1992.")
+  homeOfficePct           Int    @default(30)    // % of home's m² declared to Hacienda for the activity (Grado de afectación on modelo 036)
+  homeOfficeStartDate     DateTime?              // date the alta of the local-affecto took effect (modelo 036 alta date) — expenses before this date are not eligible for home-office deductions
+  retaMonthlyCuotaCents   Int    @default(0)     // €0 until user sets it
+  // Invoice numbering: next sequence to use within the current year
+  invoiceNumberYear       Int    @default(2026)
+  invoiceNumberSeq        Int    @default(1)
+  // Default client used when an invoice is created without an explicit clientId.
+  // Set this to the id of the Client you bill most often (or your only client).
+  defaultClientId         String?
+  // Telegram bot
+  telegramBotToken        String?                  // from @BotFather
+  telegramAllowedChatIds  String?                  // comma-separated chat IDs allowed to talk to the bot
+  // UI accent palette. Name of a preset from src/lib/palettes.ts. Drives the
+  // --accent-* CSS variables via a runtime <style> tag in the root layout.
+  accentPalette           String  @default("coral")
+  updatedAt               DateTime @updatedAt
+}
+
+// Idempotency record for the scheduled deadline reminders. The pair
+// (kind, refKey) uniquely identifies one reminder, e.g.
+// ("filing_t7", "2026-Q2") — so we never DM the user twice about the same
+// thing even across worker restarts.
+model SentReminder {
+  id     String   @id @default(cuid())
+  kind   String
+  refKey String
+  sentAt DateTime @default(now())
+
+  @@unique([kind, refKey])
+}
+
+// Per-chat conversation state with the LLM agent. We use OpenAI Responses
+// API's `previous_response_id` to maintain context across turns — only the
+// last id needs to be persisted.
+model AgentConversation {
+  id              String   @id @default(cuid())
+  chatId          String   @unique
+  lastResponseId  String?
+  lastActivityAt  DateTime @default(now())
+  createdAt       DateTime @default(now())
+}
+
+model Client {
+  id           String   @id @default(cuid())
+  name         String
+  taxId        String?  // local registration / Reg no.
+  vatId        String?  // VAT ID (e.g. EE102500628)
+  countryCode  String   // ISO 2-letter, e.g. EE, ES
+  addressLine  String
+  postalCode   String
+  city         String
+  country      String   // human-readable country name
+  email        String?
+  notes        String?
+  invoices     Invoice[]
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model Invoice {
+  id                String        @id @default(cuid())
+  number            String        @unique           // e.g. FACT-2025-00001
+  date              DateTime                          // invoice date
+  dueDate           DateTime
+  client            Client        @relation(fields: [clientId], references: [id])
+  clientId          String
+  subtotalCents     Int                               // sum of line netCents
+  vatCents          Int                               // total VAT
+  totalCents        Int                               // subtotal + vat
+  currency          String        @default("EUR")
+  vatExempt         Boolean       @default(true)
+  exemptionNote     String?                           // override default
+  notes             String?
+  pdfPath           String?                           // path under uploads/invoices/
+  // Manual early lock — once set, the invoice is immutable in the UI/tools.
+  // Auto-lock by MOD 303 filing deadline is computed at read-time in
+  // src/lib/invoice-lock.ts, no field needed for that.
+  lockedAt          DateTime?
+  lines             InvoiceLine[]
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  @@index([date])
+}
+
+model InvoiceLine {
+  id              String   @id @default(cuid())
+  invoice         Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  invoiceId       String
+  position        Int                       // 1-based order within invoice
+  description     String
+  quantity        Float                     // hours
+  unit            String   @default("h")
+  unitPriceCents  Int
+  vatRate         Float    @default(0)     // 0.0 - 0.21
+  netCents        Int                       // quantity * unitPrice (rounded)
+}
+
+// Expense categories drive default deductibility.
+enum ExpenseCategory {
+  UTILITY_ELECTRICITY
+  UTILITY_INTERNET
+  UTILITY_WATER
+  UTILITY_GAS
+  RENT_HOUSING                                          // monthly rent — deductible at home-office area % for IRPF (no 30% multiplier)
+  SOCIAL_SECURITY
+  GESTORIA
+  SOFTWARE
+  BANK_FEES
+  OTHER_DEDUCTIBLE
+  NON_DEDUCTIBLE
+}
+
+enum ExpenseStatus {
+  PENDING_REVIEW
+  CONFIRMED
+}
+
+enum ExpenseSource {
+  UPLOAD
+  AUTO_RETA
+  MANUAL
+}
+
+model Expense {
+  id                String          @id @default(cuid())
+  date              DateTime                            // invoice date on the expense doc
+  vendor            String
+  vendorVatId       String?
+  category          ExpenseCategory
+  // Amounts
+  grossCents        Int                                 // total paid
+  netCents          Int                                 // base before VAT
+  vatRate           Float           @default(0)
+  vatCents          Int             @default(0)
+  // Deduction
+  deductiblePct      Float                              // 0..100; applied to both net and VAT (can be fractional, e.g. 6.3 = 30% × 21% area)
+  deductibleNetCents Int
+  deductibleVatCents Int
+  // Provenance
+  pdfPath           String?
+  parsedJson        String?                             // raw OpenAI extraction (JSON string)
+  status            ExpenseStatus   @default(PENDING_REVIEW)
+  source            ExpenseSource   @default(UPLOAD)
+  currency          String          @default("EUR")
+  notes             String?
+  // Helps idempotency for auto-RETA: one per (year,month) when source = AUTO_RETA
+  retaYearMonth     String?         @unique             // e.g. "2026-05" only set for AUTO_RETA rows
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  @@index([date])
+  @@index([category])
+}

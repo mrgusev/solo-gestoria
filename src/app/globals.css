@@ -1,0 +1,42 @@
+@import "tailwindcss";
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+
+  /* Accent palette — defaults to coral. Overridden at runtime in the root
+     layout via an inline <style> tag based on settings.accentPalette. */
+  --accent-50: #fff4ee;
+  --accent-100: #ffe6d6;
+  --accent-200: #ffc7a8;
+  --accent-300: #ffa379;
+  --accent-400: #ff7f50;
+  --accent-500: #ff6235;
+  --accent-600: #e44a1f;
+  --accent-700: #b73818;
+  --accent-800: #8f2c14;
+  --accent-900: #6b2210;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+
+  --color-accent-50: var(--accent-50);
+  --color-accent-100: var(--accent-100);
+  --color-accent-200: var(--accent-200);
+  --color-accent-300: var(--accent-300);
+  --color-accent-400: var(--accent-400);
+  --color-accent-500: var(--accent-500);
+  --color-accent-600: var(--accent-600);
+  --color-accent-700: var(--accent-700);
+  --color-accent-800: var(--accent-800);
+  --color-accent-900: var(--accent-900);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans), ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}

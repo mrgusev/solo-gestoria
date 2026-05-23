@@ -1,0 +1,39 @@
+{
+  "_comment": "Copy this file to prisma/seed.config.json and fill in your details. seed.config.json is gitignored. Re-run `npm run db:seed` after editing — it's idempotent and only fills missing values.",
+  "settings": {
+    "issuerName": "Your Name",
+    "issuerTaxId": "X1234567X",
+    "issuerVatId": "ESX1234567X",
+    "issuerAddressLine": "C/ Example 1, 2-3",
+    "issuerPostalCode": "08001",
+    "issuerCity": "Barcelona",
+    "issuerProvince": "Barcelona",
+    "issuerCountry": "Spain",
+    "issuerEmail": null,
+    "bankName": "Your Bank",
+    "bankIban": "ES0000000000000000000000",
+    "bankSwift": "AAAAESMMXXX",
+    "bankAddress": "Bank address line",
+    "defaultHourlyRateCents": 6000,
+    "defaultLineDescription": "Software development services",
+    "homeOfficePct": 0,
+    "homeOfficeStartDate": null,
+    "retaMonthlyCuotaCents": 0
+  },
+  "defaultClient": {
+    "id": "default-client",
+    "name": "Default Client Inc.",
+    "taxId": null,
+    "vatId": null,
+    "countryCode": "EE",
+    "addressLine": "Client address line",
+    "postalCode": "10000",
+    "city": "Tallinn",
+    "country": "Estonia",
+    "email": null
+  },
+  "agent": {
+    "userDescription": "a self-employed software developer",
+    "businessNotes": "Describe your typical billing situation here — e.g. 'All sales are intra-EU services exempt of Spanish VAT under art. 25 Law 37/1992. Estimación directa simplificada.' This text is dropped into the Telegram agent's system prompt so it can give grounded answers."
+  }
+}

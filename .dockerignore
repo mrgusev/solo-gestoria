@@ -1,0 +1,16 @@
+node_modules
+.next
+.git
+data
+uploads
+dataexport
+docs/aeat/*.xlsx
+docs/aeat/*.xls
+docs/aeat/*.pdf
+docs/aeat/DR*.txt
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+README.md

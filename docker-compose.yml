@@ -1,0 +1,71 @@
+# Solo Gestoría — services:
+#
+#   app      web UI (Next.js standalone, always running)
+#   bot      Telegram bot worker (always running; idle if no token in Settings)
+#   migrate  one-shot historical import — runs only when explicitly invoked:
+#              docker compose --profile migrate run --rm migrate
+#
+# Standard bring-up:
+#   docker compose up -d --build         # builds images + starts app + bot
+#   docker compose --profile migrate run --rm migrate   # one-time import
+
+x-shared-env: &shared-env
+  APP_PASSWORD: ${APP_PASSWORD:?set APP_PASSWORD}
+  SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET (>=32 chars)}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:?set OPENAI_API_KEY}
+  DATABASE_URL: ${DATABASE_URL:-file:/data/dev.db}
+  UPLOAD_DIR: ${UPLOAD_DIR:-/uploads}
+  NODE_ENV: production
+
+services:
+  app:
+    build:
+      context: .
+      target: runner
+    image: solo-gestoria:latest
+    container_name: solo-gestoria-app
+    restart: unless-stopped
+    ports:
+      - "3010:3010"
+    environment: *shared-env
+    volumes:
+      - ./data:/data
+      - ./uploads:/uploads
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3010/login || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  bot:
+    build:
+      context: .
+      target: tools
+    image: solo-gestoria-tools:latest
+    container_name: solo-gestoria-bot
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    environment: *shared-env
+    volumes:
+      - ./data:/data
+      - ./uploads:/uploads
+    command: ["npx", "tsx", "scripts/bot-poll.ts"]
+
+  migrate:
+    build:
+      context: .
+      target: tools
+    image: solo-gestoria-tools:latest
+    container_name: solo-gestoria-migrate
+    profiles: ["migrate"]
+    environment: *shared-env
+    volumes:
+      - ./data:/data
+      - ./uploads:/uploads
+      - ./dataexport:/dataexport:ro
+      # Mount your personal seed config (gitignored on host) into the container.
+      - ./prisma/seed.config.json:/app/prisma/seed.config.json:ro
+    command: ["npx", "tsx", "scripts/migrate-historical.ts", "--source", "/dataexport"]
