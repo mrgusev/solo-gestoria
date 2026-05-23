@@ -32,11 +32,14 @@ export async function proxy(req: NextRequest) {
     if (pathname.startsWith("/api/")) {
       return NextResponse.json({ error: "unauthorized" }, { status: 401 });
     }
-    const params = new URLSearchParams({ next: pathname });
-    return new NextResponse(null, {
-      status: 307,
-      headers: { Location: `/login?${params}` },
-    });
+    // Middleware validates Location as a URL, so build an absolute one from
+    // the proxy-forwarded headers — req.nextUrl falls back to the bind
+    // address (0.0.0.0:3010) under Next.js 16's standalone server.
+    const proto = req.headers.get("x-forwarded-proto") ?? "https";
+    const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host") ?? "localhost";
+    const url = new URL("/login", `${proto}://${host}`);
+    url.searchParams.set("next", pathname);
+    return NextResponse.redirect(url);
   }
   return NextResponse.next();
 }
