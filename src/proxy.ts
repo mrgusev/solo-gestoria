@@ -32,10 +32,11 @@ export async function proxy(req: NextRequest) {
     if (pathname.startsWith("/api/")) {
       return NextResponse.json({ error: "unauthorized" }, { status: 401 });
     }
-    const url = req.nextUrl.clone();
-    url.pathname = "/login";
-    url.searchParams.set("next", pathname);
-    return NextResponse.redirect(url);
+    const params = new URLSearchParams({ next: pathname });
+    return new NextResponse(null, {
+      status: 307,
+      headers: { Location: `/login?${params}` },
+    });
   }
   return NextResponse.next();
 }

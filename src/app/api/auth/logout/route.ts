@@ -1,10 +1,7 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { clearSession } from "@/lib/auth";
 
-export async function POST(req: NextRequest) {
+export async function POST() {
   await clearSession();
-  const url = req.nextUrl.clone();
-  url.pathname = "/login";
-  url.search = "";
-  return NextResponse.redirect(url, { status: 303 });
+  return new NextResponse(null, { status: 303, headers: { Location: "/login" } });
 }

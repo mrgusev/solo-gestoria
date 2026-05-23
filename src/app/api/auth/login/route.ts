@@ -5,17 +5,16 @@ export async function POST(req: NextRequest) {
   const form = await req.formData();
   const password = String(form.get("password") ?? "");
   if (!checkPassword(password)) {
-    const url = req.nextUrl.clone();
-    url.pathname = "/login";
-    url.searchParams.set("error", "1");
+    const params = new URLSearchParams({ error: "1" });
     const next = String(form.get("next") ?? "/");
-    if (next && next !== "/") url.searchParams.set("next", next);
-    return NextResponse.redirect(url, { status: 303 });
+    if (next && next !== "/") params.set("next", next);
+    return new NextResponse(null, {
+      status: 303,
+      headers: { Location: `/login?${params}` },
+    });
   }
   await issueSession();
   const next = String(form.get("next") ?? "/");
-  const dest = req.nextUrl.clone();
-  dest.pathname = next.startsWith("/") ? next : "/";
-  dest.search = "";
-  return NextResponse.redirect(dest, { status: 303 });
+  const dest = next.startsWith("/") ? next : "/";
+  return new NextResponse(null, { status: 303, headers: { Location: dest } });
 }
