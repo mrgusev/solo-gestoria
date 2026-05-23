@@ -14,6 +14,13 @@ export const metadata: Metadata = {
   description: "Spanish autónomo bookkeeping",
 };
 
+// Every page in this app reads from SQLite (via the root layout's palette
+// query and per-page queries) and is per-user behind auth. Prerendering at
+// build time is impossible (no DB in the container at `next build`) and
+// pointless (different users / per-request state). Force dynamic so the
+// build container doesn't try to open the DB.
+export const dynamic = "force-dynamic";
+
 export default async function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
