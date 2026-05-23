@@ -31,7 +31,7 @@ ENV NODE_ENV=production \
     DATABASE_URL=file:/data/dev.db \
     UPLOAD_DIR=/uploads
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates \
+      ca-certificates wget \
     && rm -rf /var/lib/apt/lists/* \
     && addgroup --system --gid 1001 nodejs \
     && adduser --system --uid 1001 --ingroup nodejs nextjs \
@@ -42,9 +42,11 @@ COPY --from=build --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=build --chown=nextjs:nodejs /app/public ./public
 COPY --from=build --chown=nextjs:nodejs /app/prisma ./prisma
 COPY --from=build --chown=nextjs:nodejs /app/prisma.config.ts ./prisma.config.ts
-COPY --from=build --chown=nextjs:nodejs /app/node_modules/@prisma ./node_modules/@prisma
-COPY --from=build --chown=nextjs:nodejs /app/node_modules/.prisma ./node_modules/.prisma
-COPY --from=build --chown=nextjs:nodejs /app/node_modules/better-sqlite3 ./node_modules/better-sqlite3
+# Full node_modules: the standalone bundle drops everything not traced from
+# Next.js request paths, but the entrypoint also needs the prisma CLI + tsx
+# (with their transitive deps) to run db push + seed before booting the server.
+# This overrides the trimmed node_modules baked into .next/standalone above.
+COPY --from=build --chown=nextjs:nodejs /app/node_modules ./node_modules
 COPY --chown=nextjs:nodejs docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 

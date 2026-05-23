@@ -13,8 +13,9 @@ x-shared-env: &shared-env
   APP_PASSWORD: ${APP_PASSWORD:?set APP_PASSWORD}
   SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET (>=32 chars)}
   OPENAI_API_KEY: ${OPENAI_API_KEY:?set OPENAI_API_KEY}
-  DATABASE_URL: ${DATABASE_URL:-file:/data/dev.db}
-  UPLOAD_DIR: ${UPLOAD_DIR:-/uploads}
+  # Container-only paths; ignore any DATABASE_URL/UPLOAD_DIR from local-dev .env.
+  DATABASE_URL: file:/data/dev.db
+  UPLOAD_DIR: /uploads
   NODE_ENV: production
 
 services:
