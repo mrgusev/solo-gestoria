@@ -54,7 +54,7 @@ const ExpenseExtractionSchema = z.object({
         "UTILITY_INTERNET — Vodafone, Movistar, Orange, DIGI, Yoigo, MásMóvil, Lowi internet/phone bills.",
         "UTILITY_WATER — Aigües de Barcelona, Canal de Isabel II, EMASESA, Aguas de Valencia.",
         "UTILITY_GAS — Eni Plenitude, Naturgy gas, Repsol gas, Endesa gas.",
-        "RENT_HOUSING — monthly rent payments. Bank-transfer screenshots labelled 'RENTA', 'ALQUILER', 'rent', or Wise transfers of a recurring €600-€1500 to a private individual, BBVA 'RENTA OLIVERA'.",
+        "RENT_HOUSING — monthly rent payments. Bank-transfer screenshots labelled 'RENTA', 'ALQUILER', 'rent', or recurring transfers of a fixed amount to a private individual with a street-name reference in the concept field (BBVA, Wise, Revolut, SEPA).",
         "SOCIAL_SECURITY — TGSS / Tesorería General de la Seguridad Social / RETA / SEGSOC charge receipts (typically end of month).",
         "GESTORIA — Xolo, Quipu, Declarando, Anfix, Sage One, Holded, any other accountant/gestoría invoices.",
         "SOFTWARE — AWS, GitHub, GitLab, Figma, Notion, Anthropic, OpenAI, Vercel, Cloudflare, JetBrains, Adobe, Linear, 1Password — any SaaS / dev tool / domain registrar / VPS billed monthly or yearly.",
@@ -98,8 +98,13 @@ export async function parseExpensePdf(args: {
             text:
               "Extract expense fields from this Spanish invoice/receipt PDF. " +
               "All amounts are in cents (multiply euros by 100, round to nearest cent). " +
-              "If the PDF is a bank transfer receipt (e.g. for rent) and has no VAT, " +
-              "set vatCents=0, vatRate=0, netBaseCents=totalGrossCents, and pick NON_DEDUCTIBLE.",
+              "If the PDF has no VAT (typical for bank-transfer receipts), set vatCents=0, " +
+              "vatRate=0, netBaseCents=totalGrossCents. " +
+              "Choose suggestedCategory from the transfer concept/reference/vendor — never " +
+              "from VAT presence. In particular, a recurring transfer to a private individual " +
+              "with a rent reference in the concept (RENTA, ALQUILER, rent, or a street name) " +
+              "is RENT_HOUSING, not NON_DEDUCTIBLE. Only use NON_DEDUCTIBLE when the document " +
+              "genuinely has no identifiable business purpose.",
           },
           {
             type: "input_file",
