@@ -91,7 +91,19 @@ If you don't have a `prisma/seed.config.json` locally yet, create one on
 the server: `cp prisma/seed.config.example.json prisma/seed.config.json`
 and edit it.
 
-**3. Back on the server — build, start, and (optionally) import:**
+**3. Back on the server — fix permissions on the bind-mounted dirs:**
+
+The container runs as uid `1001`. Pre-create the persistent dirs with that
+ownership, and make `dataexport/` readable (macOS rsync preserves mode 700,
+which the container can't see into):
+
+```bash
+mkdir -p data uploads
+sudo chown -R 1001:1001 data uploads
+[ -d dataexport ] && sudo chmod -R o+rX dataexport
+```
+
+**4. Build, start, and (optionally) import:**
 
 ```bash
 # Build images + start app + bot
