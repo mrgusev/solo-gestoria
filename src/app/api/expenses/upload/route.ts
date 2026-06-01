@@ -4,6 +4,7 @@ import { promises as fs } from "node:fs";
 import { prisma } from "@/lib/db";
 import { parseExpensePdf } from "@/lib/expense-parser";
 import { applyDeduction, defaultDeductiblePct } from "@/lib/deduction";
+import { findDuplicateExpense } from "@/lib/expense-dedup";
 
 const UPLOAD_DIR = process.env.UPLOAD_DIR ?? "./uploads";
 
@@ -35,6 +36,19 @@ export async function POST(req: NextRequest) {
   }
 
   const date = safeDate(parsed.date) ?? new Date();
+
+  // Dedup: same day + same gross + same vendor (by VAT id or name). Short-circuit
+  // before writing the PDF so disk + DB stay clean on accidental re-uploads.
+  const dup = await findDuplicateExpense({
+    date,
+    vendor: parsed.vendor,
+    vendorVatId: parsed.vendorVatId ?? null,
+    grossCents: parsed.totalGrossCents,
+  });
+  if (dup) {
+    return NextResponse.json({ id: dup.id, duplicate: true });
+  }
+
   const deductiblePct = defaultDeductiblePct(parsed.suggestedCategory, settings, date);
   const ded = applyDeduction(deductiblePct, parsed.netBaseCents, parsed.vatCents);
 
@@ -67,7 +81,7 @@ export async function POST(req: NextRequest) {
     },
   });
 
-  return NextResponse.json({ id: created.id });
+  return NextResponse.json({ id: created.id, duplicate: false });
 }
 
 function safeDate(s: string): Date | null {

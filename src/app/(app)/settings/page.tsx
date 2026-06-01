@@ -1,7 +1,6 @@
 import PageHeader from "@/components/PageHeader";
 import { prisma } from "@/lib/db";
 import { eur } from "@/lib/money";
-import { ensureRetaExpensesForYear } from "@/lib/reta";
 import { utilityDeductiblePct } from "@/lib/deduction";
 import { recomputeAllExpenseDeductions } from "@/lib/recompute";
 import { PALETTE_NAMES, PALETTES, DEFAULT_PALETTE } from "@/lib/palettes";
@@ -39,7 +38,6 @@ async function updateSettings(formData: FormData): Promise<void> {
       telegramAllowedChatIds: telegramChatIds.length > 0 ? telegramChatIds : null,
     },
   });
-  await ensureRetaExpensesForYear(new Date().getUTCFullYear());
   // Re-apply category-driven deduction rules to all confirmed expenses so
   // changes to homeOfficePct propagate to historical utility bills.
   await recomputeAllExpenseDeductions();
@@ -90,7 +88,7 @@ export default async function SettingsPage() {
             type="number"
             step="0.01"
             defaultValue={eur(s.retaMonthlyCuotaCents).toFixed(2)}
-            hint="100% IRPF-deductible. Auto-creates one SOCIAL_SECURITY expense per month."
+            hint="100% IRPF-deductible. The bot worker creates one SOCIAL_SECURITY expense on the last day of each month."
           />
           <Field
             name="defaultHourlyRateEur"

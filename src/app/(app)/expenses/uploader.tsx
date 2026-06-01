@@ -6,13 +6,16 @@ import { useRouter } from "next/navigation";
 export function ExpenseUploader() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [duplicates, setDuplicates] = useState<string[]>([]);
   const [dragging, setDragging] = useState(false);
   const [, startTransition] = useTransition();
   const router = useRouter();
 
   async function upload(files: FileList) {
     setError(null);
+    setDuplicates([]);
     setBusy(true);
+    const dups: string[] = [];
     try {
       for (const file of Array.from(files)) {
         const fd = new FormData();
@@ -22,7 +25,10 @@ export function ExpenseUploader() {
           const text = await res.text();
           throw new Error(text || `Upload failed (${res.status})`);
         }
+        const body = (await res.json()) as { id: string; duplicate?: boolean };
+        if (body.duplicate) dups.push(file.name);
       }
+      if (dups.length > 0) setDuplicates(dups);
       startTransition(() => router.refresh());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Upload failed");
@@ -70,6 +76,13 @@ export function ExpenseUploader() {
       {error ? (
         <div className="mt-3 rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-800">
           {error}
+        </div>
+      ) : null}
+      {duplicates.length > 0 ? (
+        <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+          {duplicates.length === 1
+            ? `Skipped duplicate: ${duplicates[0]} matches an existing expense.`
+            : `Skipped ${duplicates.length} duplicates: ${duplicates.join(", ")}`}
         </div>
       ) : null}
     </div>

@@ -17,7 +17,9 @@ import { formatEUR } from "../src/lib/money";
 import { parseExpensePdf } from "../src/lib/expense-parser";
 import { transcribeVoice } from "../src/lib/voice-transcribe";
 import { dueReminders, markSent, upcomingDeadlines } from "../src/lib/reminders";
+import { ensureRetaExpenseForMonth } from "../src/lib/reta";
 import { applyDeduction, defaultDeductiblePct } from "../src/lib/deduction";
+import { findDuplicateExpense } from "../src/lib/expense-dedup";
 import { EXPENSE_CATEGORIES } from "../src/lib/expense-parser";
 import type { ExpenseCategory } from "@prisma/client";
 import { consumePending } from "../src/lib/agent/pending";
@@ -81,6 +83,7 @@ async function main() {
   console.log(`[bot] mutation gate: ON  (update/delete actions require user tap-to-confirm)`);
   console.log(`[bot] message formatting: HTML  ·  voice: gpt-4o-mini-transcribe`);
   console.log(`[bot] reminders: hourly check (DM goes to ${[...allowedChatIds][0]})`);
+  console.log(`[bot] reta cron: hourly check, fires only on last day of month`);
   console.log(`[bot] polling for updates...`);
 
   // Start the reminder scheduler — hourly check that delivers any due
@@ -91,6 +94,12 @@ async function main() {
     void checkReminders(token, reminderChatId);
     setInterval(() => { void checkReminders(token, reminderChatId); }, 60 * 60 * 1000);
   }
+
+  // Monthly RETA cron — fires on the last day of each month. Runs on the
+  // same hourly tick as reminders; idempotent via the retaYearMonth unique
+  // constraint so multiple ticks the same day are harmless.
+  void runMonthlyRetaCron();
+  setInterval(() => { void runMonthlyRetaCron(); }, 60 * 60 * 1000);
 
   let offset: number | undefined;
   while (true) {
@@ -242,6 +251,20 @@ async function sendRecentInvoices(token: string, chatId: number): Promise<void> 
 }
 
 // ---- Reminder scheduler ----
+
+async function runMonthlyRetaCron(now: Date = new Date()): Promise<void> {
+  // Last day of the current UTC month: day-0 of next month rolls back one.
+  const lastDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0)).getUTCDate();
+  if (now.getUTCDate() !== lastDay) return;
+  try {
+    const { created } = await ensureRetaExpenseForMonth(now.getUTCFullYear(), now.getUTCMonth());
+    if (created) {
+      console.log(`[bot] reta cron: created ${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`);
+    }
+  } catch (err) {
+    console.error("[bot] reta cron failed:", err);
+  }
+}
 
 async function checkReminders(token: string, chatId: number): Promise<void> {
   try {
@@ -464,6 +487,26 @@ async function handlePdfDocument(
     const settings = await prisma.settings.findUnique({ where: { id: 1 } });
     if (!settings) throw new Error("Settings missing");
     const date = safeDate(parsed.date) ?? new Date();
+
+    // Dedup: skip creating + storing the PDF if this receipt already exists.
+    // Show the user the original card so they can confirm it's the same row.
+    const dup = await findDuplicateExpense({
+      date,
+      vendor: parsed.vendor,
+      vendorVatId: parsed.vendorVatId ?? null,
+      grossCents: parsed.totalGrossCents,
+    });
+    if (dup) {
+      await tg.sendMessage(
+        token,
+        chatId,
+        `♻️ <i>Looks like you've already uploaded this one — opening the existing expense below.</i>`,
+        { parse_mode: "HTML" },
+      );
+      await sendExpenseReview(token, chatId, dup.id);
+      return;
+    }
+
     const pct = defaultDeductiblePct(parsed.suggestedCategory, settings, date);
     const ded = applyDeduction(pct, parsed.netBaseCents, parsed.vatCents);
 

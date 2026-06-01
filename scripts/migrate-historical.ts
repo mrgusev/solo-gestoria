@@ -31,6 +31,7 @@ import { parseInvoicePdf } from "../src/lib/invoice-parser";
 import { parseExpensePdf } from "../src/lib/expense-parser";
 import { applyDeduction, defaultDeductiblePct } from "../src/lib/deduction";
 import { ensureRetaExpensesForYear } from "../src/lib/reta";
+import { findDuplicateExpense } from "../src/lib/expense-dedup";
 import { invoicePdfRelPath } from "../src/lib/invoice";
 
 const UPLOAD_DIR = process.env.UPLOAD_DIR ?? "./uploads";
@@ -226,19 +227,19 @@ async function migrateInvoices(opts: {
 async function migrateExpenses(opts: {
   sourceDir: string;
   dryRun: boolean;
-}): Promise<{ created: number; failed: number }> {
+}): Promise<{ created: number; skipped: number; failed: number }> {
   const dir = path.join(opts.sourceDir, "EXPENSE");
   let files: string[];
   try {
     files = (await fs.readdir(dir)).filter((f) => f.toLowerCase().endsWith(".pdf"));
   } catch {
     console.log(`[expenses] no ${dir} directory — skipping`);
-    return { created: 0, failed: 0 };
+    return { created: 0, skipped: 0, failed: 0 };
   }
   console.log(`\n[expenses] ${files.length} PDFs in ${dir}`);
   const settings = opts.dryRun ? null : await prisma.settings.findUnique({ where: { id: 1 } });
   if (!opts.dryRun && !settings) throw new Error("Settings missing — seed first");
-  let created = 0, failed = 0;
+  let created = 0, skipped = 0, failed = 0;
   if (!opts.dryRun) {
     await fs.mkdir(path.join(UPLOAD_DIR, "expenses"), { recursive: true });
   }
@@ -251,6 +252,17 @@ async function migrateExpenses(opts: {
       if (opts.dryRun) {
         console.log(`  [dry] ${parsed.date}  ${parsed.vendor.slice(0, 40).padEnd(40)}  €${(parsed.totalGrossCents / 100).toFixed(2)}  [${parsed.suggestedCategory}]`);
         created++;
+        continue;
+      }
+      const dup = await findDuplicateExpense({
+        date,
+        vendor: parsed.vendor,
+        vendorVatId: parsed.vendorVatId ?? null,
+        grossCents: parsed.totalGrossCents,
+      });
+      if (dup) {
+        console.log(`  ↺ ${parsed.date}  ${parsed.vendor.slice(0, 38).padEnd(38)}  €${(parsed.totalGrossCents / 100).toFixed(2).padStart(9)}  (dup of ${dup.id})`);
+        skipped++;
         continue;
       }
       const pct = defaultDeductiblePct(parsed.suggestedCategory, settings!, date);
@@ -286,7 +298,7 @@ async function migrateExpenses(opts: {
       failed++;
     }
   }
-  return { created, failed };
+  return { created, skipped, failed };
 }
 
 async function main() {
@@ -316,7 +328,7 @@ async function main() {
 
   console.log("\n=== Summary ===");
   console.log(`Invoices: ${inv.created} created, ${inv.skipped} skipped, ${inv.failed} failed`);
-  console.log(`Expenses: ${exp.created} created, ${exp.failed} failed`);
+  console.log(`Expenses: ${exp.created} created, ${exp.skipped} skipped (dup), ${exp.failed} failed`);
 }
 
 main()
