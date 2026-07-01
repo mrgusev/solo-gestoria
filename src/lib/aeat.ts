@@ -220,9 +220,6 @@ export function buildMod303(args: {
   const { settings, report } = args;
   const period = quarterCode(report.quarter);
   const year = report.year;
-  // Several identification flags are only valid in the last period (4T). This
-  // app only ever emits trimestral periods, so "last" means the 4th quarter.
-  const isLastPeriod = report.quarter === 4;
 
   // ----- Page 1 (DP30301) -----
   // Identification block + IVA devengado + IVA deducible (boxes [01]..[46]).
@@ -250,10 +247,12 @@ export function buildMod303(args: {
   p1 += "2";                          // 112 conjunta
   p1 += "2";                          // 113 criterio Caja
   p1 += "2";                          // 114 destinatario Caja
-  // 115/116 prorrata especial: blank except in the last period (Nota 6);
-  // "2" = NO in 4T. We never opt for prorrata especial.
-  p1 += isLastPeriod ? "2" : " ";     // 115 prorrata especial opción
-  p1 += isLastPeriod ? "2" : " ";     // 116 revocación
+  // 115/116 prorrata especial: these are Num fields — a blank is rejected
+  // (E010170) and "0" is rejected (E010171). The validator requires "1" or
+  // "2"; "2" is the not-opting / NO value in every period. We never opt for
+  // prorrata especial, so always "2".
+  p1 += "2";                          // 115 prorrata especial opción
+  p1 += "2";                          // 116 revocación
   p1 += "2";                          // 117 concurso
   p1 += SPACE.repeat(8);              // 118-125 fecha concurso (DDMMYYYY blank)
   p1 += " ";                          // 126 tipo autoliq concurso (blank)
