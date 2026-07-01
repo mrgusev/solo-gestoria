@@ -241,7 +241,7 @@ export function buildMod303(args: {
   p1 += " ";                          // 12 (complementaria — blanco)
   p1 += tipo;                         // 13
   p1 += nif9(settings.issuerTaxId);  // 14-22
-  p1 += padA(settings.issuerName, 80); // 23-102
+  p1 += padA(apellidosNombre(settings.issuerName), 80); // 23-102 apellidos y nombre
   p1 += padN(year, 4);                // 103-106
   p1 += period;                       // 107-108
   // Identification flags 109-130. We're not tributing exclusively foral,
@@ -437,10 +437,10 @@ export function buildMod349(args: {
   r1 += "349";                        // 2-4 modelo
   r1 += padN(year, 4);                // 5-8 ejercicio
   r1 += nif9(settings.issuerTaxId);   // 9-17
-  r1 += padA(settings.issuerName, 40); // 18-57
+  r1 += padA(apellidosNombre(settings.issuerName), 40); // 18-57 apellidos y nombre
   r1 += SPACE;                        // 58 blanco
   r1 += phone9(settings.issuerPhone); // 59-67 teléfono (Num, 9 pos)
-  r1 += padA(settings.issuerName, 40); // 68-107 nombre contacto
+  r1 += padA(apellidosNombre(settings.issuerName), 40); // 68-107 apellidos y nombre contacto
   r1 += declarationId;                // 108-120 número identificativo (13 dig)
   r1 += SPACE;                        // 121 complementaria
   r1 += SPACE;                        // 122 sustitutiva
@@ -492,6 +492,14 @@ function defaultDeclarationId(model: "349"): string {
 }
 
 // ---------- Helpers ----------
+
+// AEAT "Apellidos y nombre" single-field format for personas físicas:
+// surname(s) first, then given name ("primer apellido, segundo apellido,
+// nombre"). issuerName is stored as "First Last(s)", so reorder it.
+function apellidosNombre(full: string): string {
+  const { surnames, firstName } = splitSpanishName(full);
+  return `${surnames} ${firstName}`.trim();
+}
 
 function splitSpanishName(full: string): { surnames: string; firstName: string } {
   // Spanish people normally have first name + two surnames. We assume the
