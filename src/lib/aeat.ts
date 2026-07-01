@@ -220,15 +220,20 @@ export function buildMod303(args: {
   const { settings, report } = args;
   const period = quarterCode(report.quarter);
   const year = report.year;
+  // Several identification flags are only valid in the last period (4T). This
+  // app only ever emits trimestral periods, so "last" means the 4th quarter.
+  const isLastPeriod = report.quarter === 4;
 
   // ----- Page 1 (DP30301) -----
   // Identification block + IVA devengado + IVA deducible (boxes [01]..[46]).
   // For our scenario all IVA devengado boxes are zero (intra-EU exempt
   // outputs). We populate box [28]/[29] (interior input VAT) and the running
   // totals box [45], [46].
+  const tipo = pickTipoDeclaracion303(report.mod303.box71); // I/D/C/N/U/G/V/X
+
   let p1 = "<T30301000>";          // 1-11
   p1 += " ";                          // 12 (complementaria — blanco)
-  p1 += pickTipoDeclaracion303(report.mod303.box71); // 13 (I/D/C/N/U/G/V/X)
+  p1 += tipo;                         // 13
   p1 += nif9(settings.issuerTaxId);  // 14-22
   p1 += padA(settings.issuerName, 80); // 23-102
   p1 += padN(year, 4);                // 103-106
@@ -245,15 +250,19 @@ export function buildMod303(args: {
   p1 += "2";                          // 112 conjunta
   p1 += "2";                          // 113 criterio Caja
   p1 += "2";                          // 114 destinatario Caja
-  p1 += "0";                          // 115 prorrata especial (0 vacio/no opta)
-  p1 += "0";                          // 116 revocación
+  // 115/116 prorrata especial: blank except in the last period (Nota 6);
+  // "2" = NO in 4T. We never opt for prorrata especial.
+  p1 += isLastPeriod ? "2" : " ";     // 115 prorrata especial opción
+  p1 += isLastPeriod ? "2" : " ";     // 116 revocación
   p1 += "2";                          // 117 concurso
   p1 += SPACE.repeat(8);              // 118-125 fecha concurso (DDMMYYYY blank)
   p1 += " ";                          // 126 tipo autoliq concurso (blank)
   p1 += "2";                          // 127 SII voluntario
   p1 += "0";                          // 128 exonerado 390 (0 = no aplica trimestralmente)
   p1 += "0";                          // 129 vol. ops != 0 (0 = no aplica trimestralmente)
-  p1 += "2";                          // 130 gasolinas (no)
+  // 130 gasolinas: "0" for all trimestral periods and month 01 (Nota 8);
+  // "1"/"2" only apply to monthly period 02+.
+  p1 += "0";                          // 130 gasolinas
 
   // Position now: 131. IVA devengado rows: 15 base+tipo+cuota cells, but each
   // is 17+5+17 = 39 chars. For us, all bases + cuotas are 0, but the tipo %
@@ -330,7 +339,9 @@ export function buildMod303(args: {
 
   p3 += " ";                          // sin actividad (X o blanco)
   p3 += " ";                          // autoliq. rectificativa (X o blanco)
-  p3 += padN(0, 13);                  // justificante anterior
+  // Justificante of the prior autoliquidación: must be BLANK unless this is a
+  // rectificativa. Zeros here trigger E030322/E030323.
+  p3 += SPACE.repeat(13);            // justificante anterior (blanco)
   p3 += " ";                          // baja/modif. domiciliación
   p3 += amountNum(0);                 // [111] importe rectificación
   p3 += " ";                          // motivo rectificación A
@@ -343,12 +354,45 @@ export function buildMod303(args: {
   if (p3.length !== 1017)
     throw new Error(`MOD 303 page 3 len ${p3.length} ≠ 1017`);
 
+  // ----- Page DID (DP303DID) -----
+  // Bank-account page (SWIFT/IBAN/domiciliación). Mandatory in the ejercicio
+  // 2026 v1.01 layout — omitting it makes AEAT reject the whole fichero with
+  // FRECH + E060010 "Contenido incorrecto en 'Pagina DID'". For our scenario
+  // (compensar / ingreso via NRC / sin actividad) the bank fields stay blank
+  // and Marca SEPA = 0 (vacía); we only fill the IBAN when the result type
+  // actually needs an account (devolución or domiciliación).
+  const did = buildDidPage({ tipo, iban: settings.bankIban ?? "" });
+
   const wrapped =
     envelopeOpen({ model: "303", year, period }) +
     p1 +
     p3 +
+    did +
     envelopeClose({ model: "303", year, period });
   return toLatin1(wrapped);
+}
+
+// DP303DID — 823 positions. Bank data for refund/direct-debit.
+function buildDidPage(opts: { tipo: string; iban: string }): string {
+  // IBAN/account only required for devolución (D/X) or domiciliación (U).
+  const needsBank = opts.tipo === "D" || opts.tipo === "X" || opts.tipo === "U";
+  const iban = opts.iban.toUpperCase().replace(/\s+/g, "");
+
+  let did = "<T303DID00>";              // 1-11 identificador de página
+  did += SPACE.repeat(11);              // 12-22 Devolución SWIFT-BIC (foreign only)
+  did += needsBank ? padA(iban, 34) : SPACE.repeat(34); // 23-56 IBAN
+  did += SPACE.repeat(70);             // 57-126 banco / bank name
+  did += SPACE.repeat(35);             // 127-161 dirección del banco
+  did += SPACE.repeat(30);             // 162-191 ciudad
+  did += SPACE.repeat(2);              // 192-193 código país
+  // 194 Marca SEPA: 0 vacía, 1 cuenta España, 2 UE SEPA, 3 resto países.
+  did += needsBank ? (iban.startsWith("ES") ? "1" : "2") : "0";
+  did += SPACE.repeat(617);            // 195-811 reservado AEAT
+  did += "</T303DID00>";               // 812-823 fin de registro
+
+  if (did.length !== 823)
+    throw new Error(`MOD 303 page DID len ${did.length} ≠ 823`);
+  return did;
 }
 
 function zeroBaseTipoCuota(tipoConst: string): string {
