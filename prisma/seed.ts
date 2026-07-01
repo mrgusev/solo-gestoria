@@ -14,6 +14,7 @@ type SeedConfig = {
     issuerProvince: string;
     issuerCountry: string;
     issuerEmail: string | null;
+    issuerPhone?: string | null;
     bankName: string;
     bankIban: string;
     bankSwift: string;

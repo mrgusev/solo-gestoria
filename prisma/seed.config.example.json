@@ -10,6 +10,7 @@
     "issuerProvince": "Barcelona",
     "issuerCountry": "Spain",
     "issuerEmail": null,
+    "issuerPhone": null,
     "bankName": "Your Bank",
     "bankIban": "ES0000000000000000000000",
     "bankSwift": "AAAAESMMXXX",

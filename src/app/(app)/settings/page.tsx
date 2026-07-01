@@ -202,6 +202,7 @@ export default async function SettingsPage() {
             label="Address"
             value={`${s.issuerAddressLine}, ${s.issuerPostalCode} ${s.issuerCity}, ${s.issuerCountry}`}
           />
+          <ReadField label="Phone" value={s.issuerPhone ?? "—"} />
           <ReadField label="IBAN" value={s.bankIban} />
           <ReadField label="SWIFT" value={s.bankSwift} />
           <p className="text-xs text-neutral-500">

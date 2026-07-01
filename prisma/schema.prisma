@@ -22,6 +22,7 @@ model Settings {
   issuerProvince       String
   issuerCountry        String
   issuerEmail          String?
+  issuerPhone          String?  // contact phone; digits only, used for AEAT 349 "persona con quién relacionarse"
   // Bank details
   bankName             String
   bankIban             String

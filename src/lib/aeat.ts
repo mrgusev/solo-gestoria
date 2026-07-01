@@ -80,6 +80,15 @@ function quarterCode(q: Quarter): string {
   return `${q}T`;
 }
 
+// 9-digit numeric phone for AEAT informativas. Strips non-digits, drops any
+// country-code prefix (keeps the last 9 digits), and right-justifies with
+// leading zeros. Empty/unset → all zeros (valid numeric content).
+function phone9(value: string | null | undefined): string {
+  const digits = (value ?? "").replace(/\D/g, "");
+  const nat = digits.length > 9 ? digits.slice(-9) : digits;
+  return padN(nat, 9);
+}
+
 // 9-position NIF, right-aligned with zero-padding on the left. The control
 // character (last) stays in position 9. AEAT specs say "Este campo deberá
 // estar ajustado a la derecha, siendo la última posición el carácter de
@@ -430,7 +439,7 @@ export function buildMod349(args: {
   r1 += nif9(settings.issuerTaxId);   // 9-17
   r1 += padA(settings.issuerName, 40); // 18-57
   r1 += SPACE;                        // 58 blanco
-  r1 += SPACE.repeat(9);              // 59-67 teléfono (optional, blank)
+  r1 += phone9(settings.issuerPhone); // 59-67 teléfono (Num, 9 pos)
   r1 += padA(settings.issuerName, 40); // 68-107 nombre contacto
   r1 += declarationId;                // 108-120 número identificativo (13 dig)
   r1 += SPACE;                        // 121 complementaria
