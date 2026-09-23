@@ -14,7 +14,7 @@ export async function GET(
   const [invoice, settings] = await Promise.all([
     prisma.invoice.findUnique({
       where: { id },
-      include: { lines: true, client: true },
+      include: { lines: true, client: true, bankAccount: true },
     }),
     prisma.settings.findUnique({ where: { id: 1 } }),
   ]);

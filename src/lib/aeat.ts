@@ -11,9 +11,10 @@
 //
 // IMPORTANT: AEAT's "Importar" feature checks the constants and field
 // lengths strictly. These generators target the bare-minimum field set
-// needed for our scenario (single autónomo, intra-EU services only,
-// no recargo de equivalencia, no SII, no prorrata, no agri/ganad).
-// Any change in the user's tax regime will require revisiting this.
+// needed for our scenario (single autónomo billing services domestically
+// and intra-EU, no recargo de equivalencia, no SII, no prorrata, no
+// agri/ganad). Any change in the user's tax regime will require revisiting
+// this.
 
 import type { QuarterReport, Quarter } from "./tax";
 import type { Settings } from "@prisma/client";
@@ -152,6 +153,9 @@ function envelopeClose(opts: { model: "130" | "303"; year: number; period: strin
 
 export function buildMod130(args: {
   settings: Settings;
+  // IBAN for the refund / domiciliación, resolved from the bank accounts by
+  // the caller (resolveAeatIban) — Settings.bankIban is only its last fallback.
+  iban: string;
   report: QuarterReport;
 }): Buffer {
   const { settings, report } = args;
@@ -186,7 +190,15 @@ export function buildMod130(args: {
   page += amountNum(0); // [10]
   page += amountSigned(0); // [11]
   // III. Total liquidation.
-  page += amountNum(report.mod130.box12);     // [12]
+  // [12] = [07] + [11]. The record design types this field "Num" (unsigned),
+  // but that cannot be right: [07] is signed, [14]/[17]/[19] are signed, and
+  // the spec defines a tipo de declaración "B" (resultado a deducir) that only
+  // arises when the result is negative — so the negative has to flow through
+  // [12] to reach [19]. A negative [07] is routine once clients withhold IRPF
+  // (retenciones at 15% exceed the 20% prepay as soon as deductible expenses
+  // pass ~25% of income), so writing it unsigned would throw on a perfectly
+  // ordinary quarter. We emit it signed; revisit if AEAT's validator objects.
+  page += amountSigned(report.mod130.box12);  // [12]
   page += amountNum(0);                       // [13] minoración (0)
   page += amountSigned(report.mod130.box14);  // [14]
   page += amountNum(0);                       // [15] resultados negativos prior
@@ -198,7 +210,7 @@ export function buildMod130(args: {
   // Position should now be 109 + 19 * 17 = 109 + 323 = 432.
   page += " ";                       // 432 complementaria X/blank
   page += padN(0, 13);               // 433-445 prior justificante (0 if not C)
-  page += padA(settings.bankIban, 34); // 446-479
+  page += padA(args.iban, 34); // 446-479
   page += SPACE.repeat(96);          // 480-575
   page += SPACE.repeat(13);          // 576-588 sello AEAT (blank)
   page += "</T13001000>";            // 589-600
@@ -224,6 +236,8 @@ function pickTipoDeclaracion130(box19Cents: number): string {
 
 export function buildMod303(args: {
   settings: Settings;
+  // See buildMod130 — the account AEAT refunds into / direct-debits from.
+  iban: string;
   report: QuarterReport;
 }): Buffer {
   const { settings, report } = args;
@@ -232,9 +246,10 @@ export function buildMod303(args: {
 
   // ----- Page 1 (DP30301) -----
   // Identification block + IVA devengado + IVA deducible (boxes [01]..[46]).
-  // For our scenario all IVA devengado boxes are zero (intra-EU exempt
-  // outputs). We populate box [28]/[29] (interior input VAT) and the running
-  // totals box [45], [46].
+  // Domestic sales fill the base/tipo/cuota triplets per rate; exempt
+  // (intra-EU / export) sales leave them at zero and surface in box [59] on
+  // page 3 instead. We also populate [28]/[29] (interior input VAT) and the
+  // running totals [45], [46].
   const tipo = pickTipoDeclaracion303(report.mod303.box71); // I/D/C/N/U/G/V/X
 
   let p1 = "<T30301000>";          // 1-11
@@ -272,15 +287,35 @@ export function buildMod303(args: {
   // "1"/"2" only apply to monthly period 02+.
   p1 += "0";                          // 130 gasolinas
 
-  // Position now: 131. IVA devengado rows: 15 base+tipo+cuota cells, but each
-  // is 17+5+17 = 39 chars. For us, all bases + cuotas are 0, but the tipo %
-  // constants are required.
+  // Position now: 131. IVA devengado rows: 15 base+tipo+cuota cells, each
+  // 17+5+17 = 39 chars. The tipo % constants are fixed by the spec; the base
+  // and cuota come from the quarter's domestic sales, grouped per rate exactly
+  // as the invoices computed them.
+  // Only the three statutory rates have a box on the form. Anything else means
+  // the invoice carries a rate the fichero cannot express — fail loudly rather
+  // than silently dropping the base from the declaration.
+  const MAPPED_RATES = [0.04, 0.1, 0.21];
+  for (const g of report.mod303.devengado) {
+    if (!MAPPED_RATES.some((r) => Math.abs(g.rate - r) < 1e-9)) {
+      throw new Error(
+        `MOD 303: IVA rate ${(g.rate * 100).toFixed(2)}% has no box on the form — ` +
+          `only 4%, 10% and 21% are mapped`
+      );
+    }
+  }
+  const devengado = (rate: number) =>
+    report.mod303.devengado.find((g) => Math.abs(g.rate - rate) < 1e-9);
+  const baseTipoCuota = (tipoConst: string, rate: number): string => {
+    const g = devengado(rate);
+    return amountNum(g?.baseCents ?? 0) + tipoConst + amountNum(g?.cuotaCents ?? 0);
+  };
+
   p1 += zeroBaseTipoCuota("00000"); // [150]/[151]/[152]
   p1 += zeroBaseTipoCuota("00000"); // [165]/[166]/[167]
-  p1 += zeroBaseTipoCuota("00400"); // [01]/[02]/[03] 4% IVA superreducido
+  p1 += baseTipoCuota("00400", 0.04); // [01]/[02]/[03] 4% IVA superreducido
   p1 += zeroBaseTipoCuota("00000"); // [153]/[154]/[155]
-  p1 += zeroBaseTipoCuota("01000"); // [04]/[05]/[06] 10% IVA reducido
-  p1 += zeroBaseTipoCuota("02100"); // [07]/[08]/[09] 21% IVA general
+  p1 += baseTipoCuota("01000", 0.10); // [04]/[05]/[06] 10% IVA reducido
+  p1 += baseTipoCuota("02100", 0.21); // [07]/[08]/[09] 21% IVA general
   p1 += amountNum(0) + amountNum(0); // [10]/[11] AIC
   p1 += amountNum(0) + amountNum(0); // [12]/[13] inversión sujeto pasivo
   p1 += amountSigned(0) + amountSigned(0); // [14]/[15] modificación bases/cuotas
@@ -369,7 +404,7 @@ export function buildMod303(args: {
   // (compensar / ingreso via NRC / sin actividad) the bank fields stay blank
   // and Marca SEPA = 0 (vacía); we only fill the IBAN when the result type
   // actually needs an account (devolución or domiciliación).
-  const did = buildDidPage({ tipo, iban: settings.bankIban ?? "" });
+  const did = buildDidPage({ tipo, iban: args.iban ?? "" });
 
   const wrapped =
     envelopeOpen({ model: "303", year, period }) +

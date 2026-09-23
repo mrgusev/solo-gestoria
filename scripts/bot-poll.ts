@@ -18,6 +18,14 @@ import { parseExpensePdf } from "../src/lib/expense-parser";
 import { transcribeVoice } from "../src/lib/voice-transcribe";
 import { dueReminders, markSent, upcomingDeadlines } from "../src/lib/reminders";
 import { ensureRetaExpenseForMonth } from "../src/lib/reta";
+import {
+  claimDueOccurrences,
+  failRecurringRun,
+  issueAndSendRecurringRun,
+  renderPreviewPdf,
+  skipRecurringRun,
+} from "../src/lib/recurring";
+import { isEmailConfigured, parseRecipients } from "../src/lib/email";
 import { applyDeduction, defaultDeductiblePct } from "../src/lib/deduction";
 import { findDuplicateExpense } from "../src/lib/expense-dedup";
 import { EXPENSE_CATEGORIES } from "../src/lib/expense-parser";
@@ -84,6 +92,7 @@ async function main() {
   console.log(`[bot] message formatting: HTML  ·  voice: gpt-4o-mini-transcribe`);
   console.log(`[bot] reminders: hourly check (DM goes to ${[...allowedChatIds][0]})`);
   console.log(`[bot] reta cron: hourly check, fires only on last day of month`);
+  console.log(`[bot] recurring invoices: hourly check, prompts before issuing`);
   console.log(`[bot] polling for updates...`);
 
   // Start the reminder scheduler — hourly check that delivers any due
@@ -100,6 +109,13 @@ async function main() {
   // constraint so multiple ticks the same day are harmless.
   void runMonthlyRetaCron();
   setInterval(() => { void runMonthlyRetaCron(); }, 60 * 60 * 1000);
+
+  // Recurring-invoice cron — same hourly tick. Posts a preview with
+  // Issue & send / Skip buttons; nothing is issued or emailed without a tap.
+  if (Number.isFinite(reminderChatId)) {
+    void runRecurringCron(token, reminderChatId);
+    setInterval(() => { void runRecurringCron(token, reminderChatId); }, 60 * 60 * 1000);
+  }
 
   let offset: number | undefined;
   while (true) {
@@ -149,10 +165,12 @@ async function sendHelp(token: string, chatId: number): Promise<void> {
     "/remind — upcoming deadlines",
     "",
     "<b>Conversation</b>",
-    "Just type or speak — I have tools to query data, create invoices, recategorize expenses, and download PDFs.",
+    "Just type or speak — I have tools to query data, add clients, create invoices, recategorize expenses, and download PDFs.",
     "Examples:",
     "• <i>How much tax do I owe this quarter?</i>",
     "• <i>Create an invoice for June, 65 hours at €60.</i>",
+    "• <i>Add a client: Consultora Ibérica SL, NIF B12345678, C/ Mayor 1, 28013 Madrid.</i>",
+    "• <i>Invoice Consultora Ibérica for 40 hours in July.</i>",
     "• <i>Recategorize the Barcelona waste fee to other deductible.</i>",
     "",
     "<b>Other</b>",
@@ -264,6 +282,167 @@ async function runMonthlyRetaCron(now: Date = new Date()): Promise<void> {
   } catch (err) {
     console.error("[bot] reta cron failed:", err);
   }
+}
+
+// ---- Recurring invoices ----
+
+// Claim every due occurrence and post a confirmation prompt for each. The
+// invoice itself is NOT created here — see src/lib/recurring.ts for why the
+// numbering has to wait for the tap.
+async function runRecurringCron(token: string, chatId: number): Promise<void> {
+  let due: Awaited<ReturnType<typeof claimDueOccurrences>>;
+  try {
+    due = await claimDueOccurrences();
+  } catch (err) {
+    console.error("[bot] recurring cron failed:", err);
+    return;
+  }
+  for (const { schedule, run } of due) {
+    try {
+      const settings = await prisma.settings.findUnique({ where: { id: 1 } });
+      const canEmail = settings ? isEmailConfigured(settings) : false;
+      const recipients = parseRecipients(schedule.emailTo ?? schedule.client.email);
+      const { pdf, preview } = await renderPreviewPdf(schedule, run.dueOn);
+
+      await tg.sendDocument(token, chatId, pdf, `${preview.number}-preview.pdf`, {
+        caption: `Preview of ${preview.number} — not issued yet.`,
+      });
+
+      const rows: string[] = [
+        `<b>📄 Recurring invoice due — ${esc(schedule.name)}</b>`,
+        `Client: ${esc(schedule.client.name)}`,
+        `Period: ${run.periodKey} · issue ${run.dueOn.toISOString().slice(0, 10)} · due ${preview.dueDate.toISOString().slice(0, 10)}`,
+        `Number if issued now: <code>${preview.number}</code>`,
+        `Base ${formatEUR(preview.totals.subtotalCents)}` +
+          (preview.totals.vatCents > 0 ? ` · IVA ${formatEUR(preview.totals.vatCents)}` : "") +
+          (preview.totals.irpfCents > 0 ? ` · IRPF −${formatEUR(preview.totals.irpfCents)}` : ""),
+        `<b>Total ${formatEUR(preview.totals.totalCents)}</b>`,
+      ];
+      if (!canEmail) {
+        rows.push(`⚠️ SMTP not configured — I can issue it, but you'd send it yourself.`);
+      } else if (recipients.length === 0) {
+        rows.push(`⚠️ No recipient — set an email on the client or the schedule.`);
+      } else {
+        rows.push(`Email to: ${esc(recipients.join(", "))}`);
+      }
+
+      const canSend = canEmail && recipients.length > 0;
+      const sent = await tg.sendMessage(token, chatId, rows.join("\n"), {
+        parse_mode: "HTML",
+        reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: canSend ? "✅ Issue & send" : "✅ Issue only",
+                callback_data: `rec:send:${run.id}`,
+              },
+              { text: "🚫 Skip", callback_data: `rec:skip:${run.id}` },
+            ],
+          ],
+        },
+      });
+      await prisma.recurringRun.update({
+        where: { id: run.id },
+        data: { chatId: String(chatId), messageId: sent.message_id },
+      });
+      console.log(`[bot] recurring: prompted ${schedule.name} ${run.periodKey}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[bot] recurring prompt failed for run ${run.id}:`, err);
+      await failRecurringRun(run.id, message).catch(() => {});
+      await tg
+        .sendMessage(
+          token,
+          chatId,
+          `⚠️ Recurring invoice "${esc(schedule.name)}" (${run.periodKey}) could not be prepared: ${esc(message)}`,
+          { parse_mode: "HTML" }
+        )
+        .catch(() => {});
+    }
+  }
+}
+
+async function handleRecurringCallback(
+  token: string,
+  chatId: number,
+  messageId: number,
+  callbackQueryId: string,
+  action: string,
+  runId: string
+): Promise<void> {
+  const run = await prisma.recurringRun.findUnique({
+    where: { id: runId },
+    include: { recurring: true },
+  });
+  if (!run) {
+    await tg.answerCallbackQuery(token, callbackQueryId, "That schedule run is gone", true);
+    return;
+  }
+  if (run.status !== "PENDING_CONFIRMATION") {
+    await tg.answerCallbackQuery(token, callbackQueryId, `Already handled (${run.status})`, true);
+    await tg.editMessageReplyMarkup(token, chatId, messageId, undefined).catch(() => {});
+    return;
+  }
+
+  if (action === "skip") {
+    await skipRecurringRun(runId);
+    await tg.answerCallbackQuery(token, callbackQueryId, "🚫 Skipped");
+    await tg.editMessageText(
+      token,
+      chatId,
+      messageId,
+      `🚫 Skipped ${esc(run.recurring.name)} for ${run.periodKey}. No invoice was issued, so the numbering is untouched.`,
+      { parse_mode: "HTML" }
+    );
+    return;
+  }
+
+  if (action === "send") {
+    await tg.answerCallbackQuery(token, callbackQueryId, "Issuing…");
+    await tg.editMessageReplyMarkup(token, chatId, messageId, undefined).catch(() => {});
+    try {
+      const result = await issueAndSendRecurringRun(runId);
+      const lines = [
+        result.emailed
+          ? `✅ Issued <code>${result.number}</code> and emailed it to ${esc(result.recipients.join(", "))}.`
+          : `✅ Issued <code>${result.number}</code>.`,
+      ];
+      if (!result.emailed) {
+        lines.push(
+          `📮 Not emailed: ${esc(result.emailError ?? "no SMTP configuration")}. The PDF is attached below.`
+        );
+      }
+      await tg.editMessageText(token, chatId, messageId, lines.join("\n"), { parse_mode: "HTML" });
+      if (!result.emailed) {
+        const invoice = await prisma.invoice.findUnique({
+          where: { id: result.invoiceId },
+          include: { lines: true, client: true, bankAccount: true },
+        });
+        const settings = await prisma.settings.findUnique({ where: { id: 1 } });
+        if (invoice && settings) {
+          const { renderInvoicePdf } = await import("../src/lib/invoice-pdf");
+          const pdf = await renderInvoicePdf({ invoice, settings });
+          await tg.sendDocument(token, chatId, pdf, `${invoice.number}.pdf`, {
+            caption: `Invoice ${invoice.number}`,
+          });
+        }
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[bot] recurring issue failed for run ${runId}:`, err);
+      await failRecurringRun(runId, message).catch(() => {});
+      await tg.editMessageText(
+        token,
+        chatId,
+        messageId,
+        `⚠️ Could not issue ${esc(run.recurring.name)} (${run.periodKey}): ${esc(message)}`,
+        { parse_mode: "HTML" }
+      );
+    }
+    return;
+  }
+
+  await tg.answerCallbackQuery(token, callbackQueryId, "Unknown action");
 }
 
 async function checkReminders(token: string, chatId: number): Promise<void> {
@@ -689,6 +868,10 @@ async function handleCallback(
     }
     if (domain === "pending" && messageId != null) {
       await handlePendingCallback(token, chatId, messageId, cq.id, parts[1], parts[2]);
+      return;
+    }
+    if (domain === "rec" && messageId != null) {
+      await handleRecurringCallback(token, chatId, messageId, cq.id, action, parts[2]);
       return;
     }
     await tg.answerCallbackQuery(token, cq.id, "Unknown callback");

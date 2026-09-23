@@ -11,7 +11,9 @@ export async function monthlyTotals(year: number): Promise<MonthPoint[]> {
   const [invoices, expenses] = await Promise.all([
     prisma.invoice.findMany({
       where: { date: { gte: start, lt: endExclusive } },
-      select: { date: true, totalCents: true },
+      // Income is the base imponible — IVA is collected for Hacienda and the
+      // retención is withheld from the same base, so neither is revenue.
+      select: { date: true, subtotalCents: true },
     }),
     prisma.expense.findMany({
       where: { status: "CONFIRMED", date: { gte: start, lt: endExclusive } },
@@ -33,7 +35,7 @@ export async function monthlyTotals(year: number): Promise<MonthPoint[]> {
   }));
 
   for (const inv of invoices) {
-    months[inv.date.getUTCMonth()].incomeCents += inv.totalCents;
+    months[inv.date.getUTCMonth()].incomeCents += inv.subtotalCents;
   }
   for (const e of expenses) {
     const ded = e.deductibleNetCents + e.deductibleVatCents;

@@ -2,6 +2,8 @@ import "dotenv/config";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { prisma } from "../src/lib/db";
+import { bootstrapBankAccounts } from "../src/lib/bank-accounts-db";
+import { normalizeIban } from "../src/lib/bank-accounts";
 
 type SeedConfig = {
   settings: {
@@ -24,7 +26,28 @@ type SeedConfig = {
     homeOfficePct: number;
     homeOfficeStartDate: string | null; // YYYY-MM-DD
     retaMonthlyCuotaCents: number;
+    // Optional — an existing seed.config.json predating VAT/IRPF support just
+    // falls back to the schema defaults (21% IVA, 15% retención).
+    defaultVatRate?: number;
+    defaultIrpfRetentionRate?: number;
   };
+  // Payment destinations. Optional — an install with none keeps using the
+  // single account bootstrapped from settings.bank* above. Each entry needs a
+  // stable id so re-seeding updates nothing it shouldn't.
+  bankAccounts?: {
+    id: string;
+    label: string;
+    beneficiary?: string | null;
+    bankName: string;
+    iban: string;
+    swift: string;
+    address?: string | null;
+    notes?: string | null;
+    // Comma-separated VatTreatment values, e.g. "DOMESTIC_ES".
+    defaultForTreatments?: string | null;
+    isDefault?: boolean;
+    useForAeat?: boolean;
+  }[];
   defaultClient: {
     id: string;
     name: string;
@@ -36,6 +59,13 @@ type SeedConfig = {
     city: string;
     country: string;
     email: string | null;
+    province?: string | null;
+    // Optional — defaults to the intra-EU reverse charge, which is what every
+    // pre-existing config described.
+    vatTreatment?: "DOMESTIC_ES" | "INTRA_EU_REVERSE_CHARGE" | "EXPORT_NON_EU";
+    defaultVatRate?: number;
+    irpfRetentionRate?: number;
+    invoiceLocale?: string;
   };
   agent?: {
     userDescription?: string;
@@ -79,13 +109,43 @@ async function main() {
     },
   });
 
+  // Turn a pre-multi-account install's Settings.bank* into the first
+  // BankAccount (and point its existing invoices at it) before adding any
+  // configured ones — otherwise the bootstrap would see a non-empty table and
+  // skip, leaving those invoices without an account.
+  await bootstrapBankAccounts();
+
+  for (const account of cfg.bankAccounts ?? []) {
+    await prisma.bankAccount.upsert({
+      where: { id: account.id },
+      update: {},
+      create: {
+        id: account.id,
+        label: account.label,
+        beneficiary: account.beneficiary ?? null,
+        bankName: account.bankName,
+        iban: normalizeIban(account.iban),
+        swift: account.swift.toUpperCase(),
+        address: account.address ?? null,
+        notes: account.notes ?? null,
+        defaultForTreatments: account.defaultForTreatments ?? null,
+        isDefault: account.isDefault ?? false,
+        useForAeat: account.useForAeat ?? false,
+      },
+    });
+  }
+
   await prisma.client.upsert({
     where: { id: cfg.defaultClient.id },
     update: {},
     create: cfg.defaultClient,
   });
 
-  console.log(`Seed complete. Issuer: ${cfg.settings.issuerName} · Default client: ${cfg.defaultClient.name}`);
+  const accountCount = await prisma.bankAccount.count();
+  console.log(
+    `Seed complete. Issuer: ${cfg.settings.issuerName} · Default client: ${cfg.defaultClient.name}` +
+      ` · Bank accounts: ${accountCount}`
+  );
 }
 
 main()

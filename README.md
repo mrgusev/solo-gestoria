@@ -2,7 +2,12 @@
 
 Single-tenant web tool for managing a Spanish autónomo's bookkeeping:
 
-- Generates monthly invoices in a polished PDF layout
+- Manages any number of clients, each with its own VAT treatment
+- Issues multi-line invoices — Spanish clients with IVA + IRPF retención,
+  EU businesses under the reverse charge — in a polished PDF layout
+  (`FACTURA` in Spanish, `INVOICE` in English)
+- Bills clients on a schedule (monthly / quarterly / yearly) and emails the
+  invoice PDF to them over SMTP, after a tap-to-confirm on Telegram
 - Ingests expense PDFs with OpenAI, computes deductible amounts
 - Auto-tracks monthly RETA (social-security) cuotas
 - Produces per-quarter dashboards with MOD 130 / 303 / 349 box values
@@ -240,6 +245,137 @@ the optional `"agent"` block in `prisma/seed.config.json`. Set the
 `userDescription` and `businessNotes` strings there to give the model
 grounded context about your régimen, billing situation, etc.
 
+## Clients and tax treatment
+
+Clients live at `/clients`. Each one carries a **VAT treatment** that every
+invoice snapshots at issue time, so editing a client never rewrites invoices
+you have already filed:
+
+| Treatment | Invoice | Where it lands |
+|---|---|---|
+| `DOMESTIC_ES` — Spanish client | IVA repercutido (21% default) and IRPF retención withheld (15% default) | MOD 303 boxes [07]/[08]/[09] → [27]; retención in MOD 130 box [06] |
+| `INTRA_EU_REVERSE_CHARGE` — EU business | Exempt, art. 25 Ley 37/1992 | MOD 303 box [59] + one MOD 349 row |
+| `EXPORT_NON_EU` — non-EU business | Not subject to Spanish VAT (place-of-supply rules) | Neither [59] nor MOD 349 |
+
+Picking a country in the client form pre-fills the treatment, rates and invoice
+language; every field stays editable. The 15% retención drops to **7% during
+the first three years of activity** — set that per client. Rates are stored as
+fractions (`0.21`, `0.15`); the forms show percentages.
+
+The global defaults under Settings (`defaultVatRate`, `defaultIrpfRetentionRate`)
+only seed the client form — the **Client row is what invoices actually read**.
+
+Two consequences worth knowing:
+
+- **Income is the base imponible.** The dashboard, MOD 130 box [01] and MOD 303
+  all use the net base, never the invoice total (which includes IVA and is net
+  of the retención).
+- **MOD 130 may stop being required.** Once ≥70% of the year's income has
+  carried IRPF retención you are exempt from filing it at all (art. 109.2
+  RIRPF). The quarter report shows the running percentage; it does not act on
+  it for you.
+
+Invoices are multi-line: add rows with their own quantity, unit, price and IVA
+rate at `/invoices/new`. The Telegram bot can add clients (`create_client`) and
+issue the single-line hours × rate invoice for any of them, inheriting that
+client's IVA and IRPF; **multi-line invoices and editing or deleting a client
+are web-UI-only**.
+
+## Bank accounts
+
+`/settings/bank-accounts` holds the payment destinations an invoice can print.
+Which one a new invoice gets is decided in this order:
+
+1. the account picked explicitly in the invoice editor ("Paid into"),
+2. the account whose rule claims the client's tax treatment — e.g. one account
+   marked *Spanish clients* takes every `DOMESTIC_ES` factura,
+3. the account marked **fallback**, which every other invoice uses.
+
+The choice is resolved once, when the invoice is issued, and stored on the
+`Invoice` row. Re-pointing a rule later never rewrites the payment details of
+an invoice already sent — editing the account's own fields does, so archive
+rather than repurpose an account that historical invoices reference. An account
+with invoices behind it can't be deleted, only archived (which hides it from
+the pickers and drops its rules).
+
+One account also carries the **AEAT** flag: its IBAN is what goes into the
+MOD 303 / MOD 130 fichero for a refund or domiciliación.
+
+An install upgrading from the single-account version keeps working untouched:
+the seed turns the old `Settings.bank*` fields into the first account and points
+existing invoices at it. Extra accounts can be pre-provisioned from
+`prisma/seed.config.json` via a `bankAccounts` array (see
+`seed.config.example.json`) — entries are created by stable `id` and never
+overwritten afterwards.
+
+## Recurring invoices
+
+A schedule at `/recurring` is a standing instruction: a client, a cadence, and
+the lines to bill each time. The bot worker checks hourly and, when an
+occurrence comes due, DMs you a **preview PDF** with _Issue & send_ / _Skip_.
+
+Nothing is issued until you tap. That ordering is deliberate — an invoice
+number is permanent, and the `FACT-YYYY-NNNNN` series has to stay gapless
+(art. 6.1.a RD 1619/2012), so a "maybe" invoice that later gets deleted would
+leave a hole an inspector can see. Skipping a period costs nothing; the next
+occurrence takes the next number.
+
+- **Cadence**: monthly, quarterly or yearly, on a chosen day of the month. Day
+  31 falls back to the last day of short months.
+- **Idempotency**: one run row per (schedule, period), so a worker restart or a
+  second tick can't bill the same month twice.
+- **Catch-up**: after downtime the cron still posts occurrences it missed,
+  going back at most 45 days.
+- **Send now**: the button on `/recurring` issues and emails this period
+  immediately, bypassing the Telegram round-trip.
+- Editing a schedule only affects future occurrences; invoices already issued
+  keep what they were created with.
+
+### Email (SMTP)
+
+Configure the mail server under Settings → **Email (SMTP)**; "Test connection"
+authenticates without sending anything. Any invoice can also be mailed on
+demand from its detail page, and `Invoice.emailedAt` records what went out.
+
+With a Gmail account, host is `smtp.gmail.com` and port `587` (or `465` with
+implicit TLS). Two ways to authenticate:
+
+**Sign in with Google (OAuth2)** — recommended on a Workspace domain. In
+[Cloud Console](https://console.cloud.google.com/apis/credentials) create an
+OAuth client of type **Web application**, set the app's audience to
+**Internal**, enable the **Gmail API**, and add the redirect URI shown in
+Settings to the client's _Authorized redirect URIs_. Paste the client ID and
+secret into Settings, hit **Connect Google account**, consent, and the refresh
+token is stored for you.
+
+- **The only scope requested is `gmail.send`** — send-only. The app cannot
+  read, search, label or delete anything in the mailbox, so a leaked refresh
+  token can't be used to go through your mail.
+- That scope is invalid for SMTP: Gmail's SMTP endpoint only accepts the
+  full-mailbox `https://mail.google.com/`. So OAuth mode sends through the
+  **Gmail API** (`users.messages.send`) and ignores the host/port fields
+  entirely. It also files its own copy in _Sent_, which SMTP does not.
+- Internal (Workspace) clients need no app verification, and their refresh
+  tokens don't expire.
+- An **External** client left in "Testing" expires refresh tokens after
+  **7 days** — it will look fine, then break the cron a week later.
+- Google only accepts `https://` redirect URIs, plus `http://localhost` and
+  `http://127.0.0.1`. On a plain-HTTP LAN address, register the localhost URI
+  and use the paste-the-code fallback under Settings.
+- **Test connection** redeems the refresh token and checks the granted scope,
+  so a revoked or expired grant shows up there rather than mid-cron.
+
+**App Password** — simpler, needs 2-Step Verification on; generate one at
+[myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords).
+Google labels these "not recommended" but has not removed them. Workspace
+admins can disable them by policy, in which case use OAuth2.
+
+Either way the From address must be the authenticated account or an alias
+verified under Gmail's _Send mail as_, otherwise Google rewrites the header.
+
+Mail sent over SMTP doesn't land in Gmail's Sent folder, so **Bcc myself** is
+on by default to keep an audit copy.
+
 ## Filing quarterly forms
 
 1. Open `/reports/<year>/<quarter>` — review each form's box values.
@@ -264,7 +400,9 @@ The generators in `src/lib/aeat.ts` follow the official record designs:
 
 When AEAT publishes a new version, update the spec file and revisit
 `buildMod*` in `src/lib/aeat.ts`. The lengths are asserted at generation
-time — a mismatch fails fast.
+time — a mismatch fails fast. Only the 4%, 10% and 21% IVA rates have boxes on
+MOD 303; an invoice at any other rate makes generation throw rather than
+silently drop the base from the declaration.
 
 ## License
 

@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { prisma } from "@/lib/db";
 import { computeQuarterReport, type Quarter } from "@/lib/tax";
 import { buildMod130, buildMod303, buildMod349 } from "@/lib/aeat";
+import { resolveAeatIban } from "@/lib/bank-accounts-db";
 
 type Params = Promise<{ year: string; quarter: string; form: string }>;
 
@@ -22,13 +23,15 @@ export async function GET(_req: NextRequest, { params }: { params: Params }) {
   ]);
   if (!settings) return new Response("Settings missing", { status: 500 });
 
+  const iban = await resolveAeatIban(settings);
+
   let body: Buffer;
   let filename: string;
   if (form === "130") {
-    body = buildMod130({ settings, report });
+    body = buildMod130({ settings, report, iban });
     filename = `mod130-${year}-${q}T.130`;
   } else if (form === "303") {
-    body = buildMod303({ settings, report });
+    body = buildMod303({ settings, report, iban });
     filename = `mod303-${year}-${q}T.303`;
   } else {
     body = buildMod349({ settings, report });

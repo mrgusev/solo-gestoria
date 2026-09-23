@@ -1,5 +1,5 @@
 {
-  "_comment": "Copy this file to prisma/seed.config.json and fill in your details. seed.config.json is gitignored. Re-run `npm run db:seed` after editing — it's idempotent and only fills missing values.",
+  "_comment": "Copy this file to prisma/seed.config.json and fill in your details. seed.config.json is gitignored. bankAccounts is optional — without it the legacy settings.bank* fields become the single account. Re-run `npm run db:seed` after editing — it's idempotent and only fills missing values.",
   "settings": {
     "issuerName": "Your Name",
     "issuerTaxId": "X1234567X",
@@ -19,8 +19,25 @@
     "defaultLineDescription": "Software development services",
     "homeOfficePct": 0,
     "homeOfficeStartDate": null,
-    "retaMonthlyCuotaCents": 0
+    "retaMonthlyCuotaCents": 0,
+    "defaultVatRate": 0.21,
+    "defaultIrpfRetentionRate": 0.15
   },
+  "bankAccounts": [
+    {
+      "id": "bank-main",
+      "label": "Your Bank EUR",
+      "beneficiary": null,
+      "bankName": "Your Bank",
+      "iban": "ES0000000000000000000000",
+      "swift": "AAAAESMMXXX",
+      "address": "Bank address line",
+      "notes": null,
+      "defaultForTreatments": null,
+      "isDefault": true,
+      "useForAeat": true
+    }
+  ],
   "defaultClient": {
     "id": "default-client",
     "name": "Default Client Inc.",
@@ -31,10 +48,14 @@
     "postalCode": "10000",
     "city": "Tallinn",
     "country": "Estonia",
-    "email": null
+    "email": null,
+    "vatTreatment": "INTRA_EU_REVERSE_CHARGE",
+    "defaultVatRate": 0,
+    "irpfRetentionRate": 0,
+    "invoiceLocale": "en"
   },
   "agent": {
     "userDescription": "a self-employed software developer",
-    "businessNotes": "Describe your typical billing situation here — e.g. 'All sales are intra-EU services exempt of Spanish VAT under art. 25 Law 37/1992. Estimación directa simplificada.' This text is dropped into the Telegram agent's system prompt so it can give grounded answers."
+    "businessNotes": "Describe your typical billing situation here — e.g. 'Intra-EU sales are exempt of Spanish VAT under art. 25 Law 37/1992; Spanish clients are invoiced with 21% IVA and 15% IRPF retención. Estimación directa simplificada.' This text is dropped into the Telegram agent's system prompt so it can give grounded answers."
   }
 }

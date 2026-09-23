@@ -8,6 +8,14 @@ import { computeQuarterReport, quarterRange, type Quarter } from "@/lib/tax";
 
 type Params = Promise<{ year: string; quarter: string }>;
 
+// Which MOD 303 base box each statutory IVA rate lands in (the cuota sits two
+// boxes later — [03], [06], [09] respectively).
+const DEVENGADO_BOXES: Record<number, string> = {
+  0.04: "01",
+  0.1: "04",
+  0.21: "07",
+};
+
 // Return a sorted list of years with at least one invoice or expense.
 async function activeYears(): Promise<number[]> {
   const [invMin, invMax, expMin, expMax] = await Promise.all([
@@ -58,6 +66,13 @@ export default async function QuarterReportPage({
 
   // Year range covers any year with recorded activity, plus one ahead/behind
   // for forward planning. Derive from actual invoice/expense dates.
+  // Share of YTD income that arrived with IRPF withheld — drives the art.
+  // 109.2 RIRPF hint on the MOD 130 card. Null when nothing was withheld.
+  const retentionCoverage =
+    report.ytd.withheldIncomeCents > 0 && report.ytd.incomeCents > 0
+      ? (report.ytd.withheldIncomeCents / report.ytd.incomeCents) * 100
+      : null;
+
   const yearRange = await activeYears();
   const minY = Math.min(year - 1, ...yearRange);
   const maxY = Math.max(year + 1, ...yearRange);
@@ -120,17 +135,30 @@ export default async function QuarterReportPage({
           <BoxRow box="03" label="Rendimiento neto (01 − 02)" value={report.mod130.box03} />
           <BoxRow box="04" label="20% de la casilla 03" value={report.mod130.box04} />
           <BoxRow box="05" label="Pagos fraccionados anteriores (suma 07 trimestres previos)" value={report.mod130.box05} />
-          <BoxRow box="06" label="Retenciones (0 para cliente intra-EU sin retención)" value={report.mod130.box06} />
+          <BoxRow box="06" label="Retenciones soportadas (IRPF retenido por clientes españoles, YTD)" value={report.mod130.box06} />
           <BoxRow box="07" label="Pago fraccionado del trimestre (04 − 05 − 06)" value={report.mod130.box07} bold />
           <BoxRow box="12" label="Suma pagos del trimestre (07 + 11; 11 = 0)" value={report.mod130.box12} muted />
           <BoxRow box="14" label="Diferencia (12 − 13; 13 = 0)" value={report.mod130.box14} muted />
           <BoxRow box="17" label="Total (14 − 15 − 16; 15 = 16 = 0)" value={report.mod130.box17} muted />
           <BoxRow box="19" label="Resultado a ingresar" value={report.mod130.box19} bold />
+          {retentionCoverage != null ? (
+            <p
+              className={`mt-3 text-xs ${
+                retentionCoverage >= 70 ? "text-amber-700" : "text-neutral-500"
+              }`}
+            >
+              {retentionCoverage.toFixed(1)}% of this year&rsquo;s income has carried IRPF
+              retention.{" "}
+              {retentionCoverage >= 70
+                ? "Above 70% you are exempt from filing MOD 130 at all (art. 109.2 RIRPF) — verify before submitting."
+                : "MOD 130 stops being required once this passes 70% (art. 109.2 RIRPF)."}
+            </p>
+          ) : null}
         </FormCard>
 
         <FormCard
           title="MOD 303 — VAT autoliquidación"
-          subtitle="No output VAT (all sales are intra-EU services, reverse charge). We only deduct input VAT."
+          subtitle="IVA repercutido on Spanish sales, less deductible input VAT. Exempt (intra-EU / export) sales carry no output VAT and appear in box 59."
           submission={
             <>
               <p>
@@ -159,7 +187,15 @@ export default async function QuarterReportPage({
             </>
           }
         >
-          <BoxRow box="27" label="Total cuota devengada" value={report.mod303.box27} muted />
+          {report.mod303.devengado.map((g) => (
+            <BoxRow
+              key={g.rate}
+              box={DEVENGADO_BOXES[g.rate] ?? "—"}
+              label={`Base imponible al ${Math.round(g.rate * 10000) / 100}% · cuota ${formatEUR(g.cuotaCents)}`}
+              value={g.baseCents}
+            />
+          ))}
+          <BoxRow box="27" label="Total cuota devengada" value={report.mod303.box27} />
           <BoxRow box="28" label="Base IVA deducible (operaciones interiores)" value={report.mod303.box28} />
           <BoxRow box="29" label="Cuota IVA deducible (operaciones interiores)" value={report.mod303.box29} />
           <BoxRow box="45" label="Total a deducir" value={report.mod303.box45} />

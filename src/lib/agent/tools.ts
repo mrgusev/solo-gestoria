@@ -2,6 +2,9 @@ import { z } from "zod";
 import { prisma } from "../db";
 import { renderInvoicePdf } from "../invoice-pdf";
 import { createMonthlyInvoice, previewNextInvoiceNumber } from "../invoice";
+import { pctToRate, rateToPct } from "../invoice-totals";
+import { taxPresetForCountry, countryName } from "../clients";
+import { listBankAccounts, resolveAeatIban } from "../bank-accounts-db";
 import { computeQuarterReport, quarterOf, type Quarter } from "../tax";
 import { recomputeAllExpenseDeductions } from "../recompute";
 import * as tg from "../telegram";
@@ -61,6 +64,7 @@ const tools = [
     handler: async () => {
       const s = await prisma.settings.findUnique({ where: { id: 1 } });
       if (!s) throw new Error("Settings not initialised");
+      const accounts = await listBankAccounts();
       return {
         issuerName: s.issuerName,
         issuerTaxId: s.issuerTaxId,
@@ -71,7 +75,14 @@ const tools = [
         retaMonthlyCuotaCents: s.retaMonthlyCuotaCents,
         defaultHourlyRateCents: s.defaultHourlyRateCents,
         defaultLineDescription: s.defaultLineDescription,
-        bankIban: s.bankIban,
+        bankAccounts: accounts.map((a) => ({
+          id: a.id,
+          label: a.label,
+          iban: a.iban,
+          defaultFor: a.defaultForTreatments,
+          isFallback: a.isDefault,
+        })),
+        aeatIban: await resolveAeatIban(s),
       };
     },
   }),
@@ -109,7 +120,8 @@ const tools = [
       const [invoices, expenses] = await Promise.all([
         prisma.invoice.findMany({
           where: { date: { gte: start, lt: endExclusive } },
-          select: { date: true, totalCents: true },
+          // Income = base imponible, matching the dashboard and MOD 130 [01].
+          select: { date: true, subtotalCents: true },
         }),
         prisma.expense.findMany({
           where: { status: "CONFIRMED", date: { gte: start, lt: endExclusive } },
@@ -121,7 +133,7 @@ const tools = [
       for (let m = 0; m < 12; m++) {
         monthly.push({ month: m + 1, incomeCents: 0, deductibleCents: 0 });
       }
-      for (const inv of invoices) monthly[inv.date.getUTCMonth()].incomeCents += inv.totalCents;
+      for (const inv of invoices) monthly[inv.date.getUTCMonth()].incomeCents += inv.subtotalCents;
       for (const e of expenses) {
         monthly[e.date.getUTCMonth()].deductibleCents +=
           e.deductibleNetCents + e.deductibleVatCents;
@@ -145,7 +157,7 @@ const tools = [
   defineTool({
     name: "list_invoices",
     description:
-      "List invoices, optionally filtered by year and quarter. Returns id, number, date, client name, total. Default limit 20.",
+      "List invoices, optionally filtered by year and quarter. Returns id, number, date, client name, base/VAT/IRPF/total and the VAT treatment. Default limit 20.",
     parameters: z.object({
       year: YearParam.optional(),
       quarter: QuarterParam.optional(),
@@ -173,7 +185,11 @@ const tools = [
         date: r.date.toISOString().slice(0, 10),
         dueDate: r.dueDate.toISOString().slice(0, 10),
         client: r.client.name,
+        subtotalCents: r.subtotalCents,
+        vatCents: r.vatCents,
+        irpfCents: r.irpfCents,
         totalCents: r.totalCents,
+        vatTreatment: r.vatTreatment,
         vatExempt: r.vatExempt,
       }));
     },
@@ -200,13 +216,17 @@ const tools = [
         clientVatId: inv.client.vatId,
         subtotalCents: inv.subtotalCents,
         vatCents: inv.vatCents,
+        irpfCents: inv.irpfCents,
+        irpfRate: inv.irpfRate,
         totalCents: inv.totalCents,
+        vatTreatment: inv.vatTreatment,
         vatExempt: inv.vatExempt,
         lines: inv.lines.map((l) => ({
           description: l.description,
           quantity: l.quantity,
           unit: l.unit,
           unitPriceCents: l.unitPriceCents,
+          vatRate: l.vatRate,
           netCents: l.netCents,
         })),
       };
@@ -223,7 +243,7 @@ const tools = [
   defineTool({
     name: "create_invoice",
     description:
-      "Create a new invoice. Date is the invoice issue date (YYYY-MM-DD). dueDate defaults to date + 30 days. hourlyRate is optional (defaults to settings.defaultHourlyRate). description is optional. clientId defaults to settings.defaultClientId. Returns the created invoice id + number.",
+      "Create a new single-line invoice (hours x rate). Date is the invoice issue date (YYYY-MM-DD). dueDate defaults to date + 30 days. hourlyRate is optional (defaults to settings.defaultHourlyRate). description is optional. clientId defaults to settings.defaultClientId. IVA and IRPF are taken from the client's tax treatment — only pass vatRatePct/irpfRatePct to override them for this one invoice. The payment account is likewise chosen from the client's treatment; only pass bankAccountId (see get_settings) when the user asks to be paid into a specific account. For multi-line invoices, direct the user to /invoices/new in the web UI. Returns the created invoice id + number.",
     parameters: z.object({
       date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
       dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
@@ -231,8 +251,21 @@ const tools = [
       hourlyRateEur: z.number().positive().optional(),
       description: z.string().optional(),
       clientId: z.string().optional(),
+      vatRatePct: z.number().min(0).max(100).optional(),
+      irpfRatePct: z.number().min(0).max(100).optional(),
+      bankAccountId: z.string().optional(),
     }),
-    handler: async ({ date, dueDate, hours, hourlyRateEur, description, clientId }) => {
+    handler: async ({
+      date,
+      dueDate,
+      hours,
+      hourlyRateEur,
+      description,
+      clientId,
+      vatRatePct,
+      irpfRatePct,
+      bankAccountId,
+    }) => {
       const issueDate = parseDate(date);
       const due = dueDate ? parseDate(dueDate) : addDays(issueDate, 30);
       const inv = await createMonthlyInvoice({
@@ -242,6 +275,9 @@ const tools = [
         hourlyRateCents: hourlyRateEur != null ? Math.round(hourlyRateEur * 100) : undefined,
         description,
         clientId,
+        vatRate: vatRatePct != null ? pctToRate(vatRatePct) : undefined,
+        irpfRate: irpfRatePct != null ? pctToRate(irpfRatePct) : undefined,
+        bankAccountId,
       });
       return inv;
     },
@@ -259,7 +295,7 @@ const tools = [
       const [invoice, settings] = await Promise.all([
         prisma.invoice.findFirst({
           where: { OR: [{ id: idOrNumber }, { number: idOrNumber }] },
-          include: { lines: true, client: true },
+          include: { lines: true, client: true, bankAccount: true },
         }),
         prisma.settings.findUnique({ where: { id: 1 } }),
       ]);
@@ -538,8 +574,114 @@ const tools = [
   }),
 
   defineTool({
+    name: "create_client",
+    description:
+      "Create a new billing client. countryCode drives the tax treatment: ES gives a Spanish client (IVA repercutido + IRPF retención, factura in Spanish), another EU country gives the intra-EU reverse charge (exempt, MOD 349), anywhere else is outside the scope of Spanish VAT. Rates default to the Settings values (21% IVA / 15% IRPF) — only pass vatRatePct/irpfRatePct to override, e.g. 7% IRPF during the first 3 years of activity. Returns the client id; pass it to create_invoice as clientId. Editing or deleting a client is web-UI-only (/clients).",
+    parameters: z.object({
+      name: z.string(),
+      countryCode: z.string().describe("ISO 2-letter country code, e.g. ES, EE, DE"),
+      addressLine: z.string(),
+      postalCode: z.string(),
+      city: z.string(),
+      province: z.string().optional().describe("Province — expected on Spanish addresses."),
+      country: z.string().optional().describe("Human-readable country name; derived from countryCode when omitted."),
+      taxId: z.string().optional().describe("NIF/CIF for Spanish clients, local registration number otherwise. Required on a Spanish factura."),
+      vatId: z.string().optional().describe("VAT ID with country prefix, e.g. EE102500628. Needed for MOD 349."),
+      email: z.string().optional(),
+      notes: z.string().optional(),
+      vatTreatment: z
+        .enum(["DOMESTIC_ES", "INTRA_EU_REVERSE_CHARGE", "EXPORT_NON_EU"])
+        .optional()
+        .describe("Override the treatment implied by countryCode."),
+      vatRatePct: z.number().min(0).max(100).optional(),
+      irpfRatePct: z.number().min(0).max(100).optional(),
+      makeDefault: z.boolean().optional().describe("Use this client for invoices created without an explicit clientId."),
+    }),
+    handler: async (args) => {
+      const settings = await prisma.settings.findUnique({ where: { id: 1 } });
+      if (!settings) throw new Error("Settings missing — run db:seed");
+
+      const countryCode = args.countryCode.trim().toUpperCase();
+      if (!/^[A-Z]{2}$/.test(countryCode)) {
+        throw new Error(`countryCode must be 2 letters, got "${args.countryCode}"`);
+      }
+      // Refuse near-duplicates rather than quietly creating a second row — the
+      // agent should reuse the existing id.
+      const existing = await prisma.client.findMany({ select: { id: true, name: true } });
+      const clash = existing.find(
+        (c) => c.name.trim().toLowerCase() === args.name.trim().toLowerCase()
+      );
+      if (clash) {
+        return {
+          error: "client_exists",
+          message: `A client named "${clash.name}" already exists (id ${clash.id}). Use that id, or ask the user to rename.`,
+          clientId: clash.id,
+        };
+      }
+
+      const preset = taxPresetForCountry(countryCode, {
+        vatRate: rateToPct(settings.defaultVatRate),
+        irpfRate: rateToPct(settings.defaultIrpfRetentionRate),
+      });
+      const vatTreatment = args.vatTreatment ?? preset.vatTreatment;
+      const domestic = vatTreatment === "DOMESTIC_ES";
+
+      const created = await prisma.client.create({
+        data: {
+          name: args.name.trim(),
+          taxId: args.taxId ?? null,
+          vatId: args.vatId ?? null,
+          countryCode,
+          country: args.country ?? countryName(countryCode),
+          addressLine: args.addressLine,
+          postalCode: args.postalCode,
+          city: args.city,
+          province: args.province ?? null,
+          email: args.email ?? null,
+          notes: args.notes ?? null,
+          vatTreatment,
+          // Exempt treatments never carry rates.
+          defaultVatRate: domestic ? pctToRate(args.vatRatePct ?? preset.vatRate) : 0,
+          irpfRetentionRate: domestic ? pctToRate(args.irpfRatePct ?? preset.irpfRate) : 0,
+          invoiceLocale: args.vatTreatment ? (domestic ? "es" : "en") : preset.locale,
+        },
+      });
+
+      if (args.makeDefault || !settings.defaultClientId) {
+        await prisma.settings.update({
+          where: { id: 1 },
+          data: { defaultClientId: created.id },
+        });
+      }
+
+      const warnings: string[] = [];
+      if (domestic && !created.taxId) {
+        warnings.push(
+          "No NIF/CIF on file — a Spanish factura legally needs the client's NIF. Ask the user for it and add it at /clients."
+        );
+      }
+      if (vatTreatment === "INTRA_EU_REVERSE_CHARGE" && !created.vatId) {
+        warnings.push("No VAT ID on file — required to report this client in MOD 349.");
+      }
+
+      return {
+        id: created.id,
+        name: created.name,
+        countryCode: created.countryCode,
+        vatTreatment: created.vatTreatment,
+        vatRatePct: rateToPct(created.defaultVatRate),
+        irpfRatePct: rateToPct(created.irpfRetentionRate),
+        invoiceLocale: created.invoiceLocale,
+        isDefault: args.makeDefault || !settings.defaultClientId,
+        ...(warnings.length > 0 ? { warnings } : {}),
+      };
+    },
+  }),
+
+  defineTool({
     name: "list_clients",
-    description: "List billing clients on file.",
+    description:
+      "List billing clients on file, with each one's VAT treatment and IVA/IRPF rates. Clients are created and edited in the web UI at /clients, not from chat.",
     parameters: z.object({}),
     handler: async () => {
       const cs = await prisma.client.findMany({ orderBy: { name: "asc" } });
@@ -547,8 +689,12 @@ const tools = [
         id: c.id,
         name: c.name,
         vatId: c.vatId,
+        taxId: c.taxId,
         country: c.country,
         countryCode: c.countryCode,
+        vatTreatment: c.vatTreatment,
+        vatRatePct: rateToPct(c.defaultVatRate),
+        irpfRatePct: rateToPct(c.irpfRetentionRate),
       }));
     },
   }),

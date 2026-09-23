@@ -1,5 +1,5 @@
 import { prisma } from "./db";
-import type { ExpenseCategory } from "@prisma/client";
+import type { ExpenseCategory, VatTreatment } from "@prisma/client";
 
 export type Quarter = 1 | 2 | 3 | 4;
 
@@ -30,10 +30,11 @@ type ExpenseRow = {
 };
 
 type InvoiceRow = {
-  totalCents: number;
-  subtotalCents: number;
-  clientCountryCode: string;
-  clientVatId: string | null;
+  subtotalCents: number;   // base imponible — this is the taxable income
+  vatCents: number;
+  irpfCents: number;
+  vatTreatment: VatTreatment;
+  lines: { vatRate: number; netCents: number }[];
 };
 
 async function fetchExpenses(start: Date, endExclusive: Date): Promise<ExpenseRow[]> {
@@ -53,17 +54,14 @@ async function fetchInvoices(start: Date, endExclusive: Date): Promise<InvoiceRo
   const rows = await prisma.invoice.findMany({
     where: { date: { gte: start, lt: endExclusive } },
     select: {
-      totalCents: true,
       subtotalCents: true,
-      client: { select: { countryCode: true, vatId: true } },
+      vatCents: true,
+      irpfCents: true,
+      vatTreatment: true,
+      lines: { select: { vatRate: true, netCents: true } },
     },
   });
-  return rows.map((r) => ({
-    totalCents: r.totalCents,
-    subtotalCents: r.subtotalCents,
-    clientCountryCode: r.client.countryCode,
-    clientVatId: r.client.vatId,
-  }));
+  return rows;
 }
 
 export type QuarterReport = {
@@ -80,6 +78,12 @@ export type QuarterReport = {
   ytd: {
     incomeCents: number;
     deductibleNetCents: number;
+    // Income that arrived with IRPF withheld, and the retenciones themselves.
+    // Once withheld income is ≥70% of the total an autónomo is exempt from
+    // filing MOD 130 altogether (art. 109.2 RIRPF) — surfaced as a hint on the
+    // report page, never applied automatically.
+    withheldIncomeCents: number;
+    retentionsCents: number;
   };
   // Per-quarter prior payments (sum of MOD 130 box 07 for prior quarters of same year)
   priorMod130PaymentsCents: number;
@@ -90,7 +94,7 @@ export type QuarterReport = {
     box03: number; // 01 - 02
     box04: number; // max(0, 0.20 * 03)
     box05: number; // sum of prior box 07 - prior box 16 (we treat box 16 = 0)
-    box06: number; // withholdings YTD (0 for intra-EU customer with no withholding)
+    box06: number; // retenciones soportadas YTD (IRPF withheld by Spanish clients)
     box07: number; // 04 - 05 - 06
     box12: number; // 07 + 11 (11 = 0 for us)
     box14: number; // 12 - 13 (13 = 0 for us)
@@ -99,7 +103,10 @@ export type QuarterReport = {
   };
   // MOD 303 boxes
   mod303: {
-    box27: number; // total cuota devengada (0 if all sales intra-EU exempt)
+    // IVA devengado on domestic sales, grouped by rate — feeds the
+    // base/tipo/cuota triplets on page 1 ([07]/[08]/[09] for 21%, etc.).
+    devengado: Array<{ rate: number; baseCents: number; cuotaCents: number }>;
+    box27: number; // total cuota devengada (0 if all sales are exempt)
     box28: number; // base imponible deducible operaciones interiores
     box29: number; // cuota deducible operaciones interiores
     box45: number; // total a deducir
@@ -135,15 +142,22 @@ export async function computeQuarterReport(
     fetchInvoices(yStart, yEnd),
   ]);
 
-  const qIncome = qInvoices.reduce((s, r) => s + r.totalCents, 0);
+  // Ingresos computables are the base imponible: IVA repercutido is collected
+  // on Hacienda's behalf and the retención is withheld from the same base, so
+  // neither changes the income figure.
+  const qIncome = qInvoices.reduce((s, r) => s + r.subtotalCents, 0);
   const qDeductibleNet = qExpenses.reduce((s, r) => s + r.deductibleNetCents, 0);
   const qDeductibleVat = qExpenses.reduce((s, r) => s + r.deductibleVatCents, 0);
   const qDeductibleNetWithVat = qExpenses
     .filter((r) => r.vatCents > 0)
     .reduce((s, r) => s + r.deductibleNetCents, 0);
 
-  const ytdIncome = ytdInvoices.reduce((s, r) => s + r.totalCents, 0);
+  const ytdIncome = ytdInvoices.reduce((s, r) => s + r.subtotalCents, 0);
   const ytdDeductibleNet = ytdExpenses.reduce((s, r) => s + r.deductibleNetCents, 0);
+  const ytdRetentions = ytdInvoices.reduce((s, r) => s + r.irpfCents, 0);
+  const ytdWithheldIncome = ytdInvoices
+    .filter((r) => r.irpfCents > 0)
+    .reduce((s, r) => s + r.subtotalCents, 0);
 
   // Prior MOD 130 payments this year: recursive but bounded to up to 3 prior quarters.
   let priorPayments = 0;
@@ -157,19 +171,41 @@ export async function computeQuarterReport(
   const box03 = box01 - box02;
   const box04 = Math.max(0, Math.round(box03 * 0.2));
   const box05 = priorPayments;
-  const box06 = 0;
+  const box06 = ytdRetentions;
   const box07 = box04 - box05 - box06;
   const box12 = box07; // box 11 = 0 for non-agricultural activity
   const box14 = box12; // box 13 = 0
   const box17 = box14; // box 15 = 16 = 0
   const box19 = box17;
 
-  const intraEU = qInvoices.filter(
-    (r) => r.clientCountryCode !== "ES" && (r.clientVatId ?? "").length > 0
-  );
-  const box59 = intraEU.reduce((s, r) => s + r.totalCents, 0);
+  // Box [59] — entregas intracomunitarias. Driven by the invoice's own
+  // treatment snapshot, not by guessing from the client's country, so exports
+  // outside the EU never land here.
+  const box59 = qInvoices
+    .filter((r) => r.vatTreatment === "INTRA_EU_REVERSE_CHARGE")
+    .reduce((s, r) => s + r.subtotalCents, 0);
 
-  const box27 = 0;
+  // IVA devengado — group the domestic lines by rate, exactly as the form does.
+  const devengadoByRate = new Map<number, number>();
+  for (const inv of qInvoices) {
+    if (inv.vatTreatment !== "DOMESTIC_ES") continue;
+    for (const line of inv.lines) {
+      if (line.vatRate <= 0) continue;
+      devengadoByRate.set(
+        line.vatRate,
+        (devengadoByRate.get(line.vatRate) ?? 0) + line.netCents
+      );
+    }
+  }
+  const devengado = Array.from(devengadoByRate.entries())
+    .sort((a, b) => a[0] - b[0])
+    .map(([rate, baseCents]) => ({
+      rate,
+      baseCents,
+      cuotaCents: Math.round(baseCents * rate),
+    }));
+
+  const box27 = devengado.reduce((s, g) => s + g.cuotaCents, 0);
   const box28 = qDeductibleNetWithVat;
   const box29 = qDeductibleVat;
   const box45 = box29;
@@ -185,13 +221,15 @@ export async function computeQuarterReport(
     string,
     { countryCode: string; vatNumberWithoutPrefix: string; name: string; baseCents: number }
   >();
+  // Only reverse-charged intra-EU sales are declared — never domestic ones and
+  // never exports outside the EU.
   const intraInvoices = await prisma.invoice.findMany({
     where: {
       date: { gte: qStart, lt: qEnd },
-      client: { countryCode: { not: "ES" } },
+      vatTreatment: "INTRA_EU_REVERSE_CHARGE",
     },
     select: {
-      totalCents: true,
+      subtotalCents: true,
       client: { select: { name: true, vatId: true, countryCode: true } },
     },
   });
@@ -207,7 +245,7 @@ export async function computeQuarterReport(
       name: inv.client.name,
       baseCents: 0,
     };
-    cur.baseCents += inv.totalCents;
+    cur.baseCents += inv.subtotalCents;
     byClient.set(key, cur);
   }
   const mod349 = Array.from(byClient.values()).map((c) => ({ ...c, clave: "S" as const }));
@@ -224,10 +262,25 @@ export async function computeQuarterReport(
     ytd: {
       incomeCents: ytdIncome,
       deductibleNetCents: ytdDeductibleNet,
+      withheldIncomeCents: ytdWithheldIncome,
+      retentionsCents: ytdRetentions,
     },
     priorMod130PaymentsCents: priorPayments,
     mod130: { box01, box02, box03, box04, box05, box06, box07, box12, box14, box17, box19 },
-    mod303: { box27, box28, box29, box45, box46, box59, box64, box66, box69, box71, box72 },
+    mod303: {
+      devengado,
+      box27,
+      box28,
+      box29,
+      box45,
+      box46,
+      box59,
+      box64,
+      box66,
+      box69,
+      box71,
+      box72,
+    },
     mod349,
   };
 }
