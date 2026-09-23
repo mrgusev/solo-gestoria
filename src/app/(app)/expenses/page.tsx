@@ -11,6 +11,18 @@ export default async function ExpensesPage() {
       <PageHeader
         title="Expenses"
         description="Drag-drop PDFs to auto-extract amounts, dates, and categories."
+        actions={
+          expenses.some((e) => e.pdfPath) ? (
+            // Plain <a>, not <Link>: this is a file download, not a route.
+            <a
+              href="/api/expenses/export"
+              download
+              className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm hover:bg-neutral-50"
+            >
+              Export all (ZIP)
+            </a>
+          ) : null
+        }
       />
       <div className="p-6 space-y-6">
         <ExpenseUploader />
