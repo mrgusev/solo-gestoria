@@ -27,6 +27,16 @@ const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
 // LAN-IP install has to use the paste-the-code fallback instead.
 export const OAUTH_CALLBACK_PATH = "/api/google/oauth/callback";
 
+// The public origin the browser used, rebuilt from the reverse proxy's
+// forwarded headers. Never use req.nextUrl.origin for this: under the
+// standalone server it's the container's bind address (http://0.0.0.0:3010),
+// which Google rejects as a non-compliant redirect URI.
+export function originFromHeaders(h: Headers): string {
+  const proto = h.get("x-forwarded-proto") ?? "http";
+  const host = h.get("x-forwarded-host") ?? h.get("host") ?? "localhost:3010";
+  return `${proto}://${host}`;
+}
+
 export function defaultRedirectUri(origin?: string): string {
   return `${origin ?? "http://localhost:3010"}${OAUTH_CALLBACK_PATH}`;
 }

@@ -4,14 +4,14 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { exchangeCodeForRefreshToken, defaultRedirectUri } from "@/lib/google-oauth";
+import {
+  exchangeCodeForRefreshToken,
+  defaultRedirectUri,
+  originFromHeaders,
+} from "@/lib/google-oauth";
 
 function settingsUrl(req: NextRequest, params: Record<string, string>): URL {
-  // Build from the forwarded headers: nextUrl reports the container's bind
-  // address under the standalone server, which a browser can't follow.
-  const proto = req.headers.get("x-forwarded-proto") ?? "http";
-  const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host") ?? "localhost:3010";
-  const url = new URL("/settings", `${proto}://${host}`);
+  const url = new URL("/settings", originFromHeaders(req.headers));
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
   return url;
 }
@@ -42,7 +42,7 @@ export async function GET(req: NextRequest) {
       code,
       // Must byte-match the redirect_uri sent to the consent screen, or Google
       // rejects the exchange with redirect_uri_mismatch.
-      redirectUri: settings.googleRedirectUri ?? defaultRedirectUri(req.nextUrl.origin),
+      redirectUri: settings.googleRedirectUri ?? defaultRedirectUri(originFromHeaders(req.headers)),
     });
     await prisma.settings.update({
       where: { id: 1 },

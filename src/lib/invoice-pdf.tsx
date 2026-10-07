@@ -25,7 +25,8 @@ const styles = StyleSheet.create({
     color: "#111",
     paddingTop: 56,
     paddingHorizontal: 56,
-    paddingBottom: 110,
+    // Room for the thanks line + footer, which sit in the bottom margin.
+    paddingBottom: 180,
   },
   bigTitle: { fontSize: 36, color: COLOR_BLUE, fontFamily: "Helvetica-Bold", marginBottom: 14 },
   rowMeta: { flexDirection: "row", marginBottom: 4 },
@@ -94,20 +95,21 @@ const styles = StyleSheet.create({
   totalFinalLabel: { fontFamily: "Helvetica-Bold", fontSize: 11 },
   totalFinalValue: { fontFamily: "Helvetica-Bold", fontSize: 11 },
   // Footer
-  thanks: {
-    position: "absolute",
-    bottom: 110,
-    left: 56,
-    right: 56,
-    textAlign: "center",
-    color: "#cdd1d8",
-    fontSize: 22,
-  },
-  pageFooter: {
+  // The thanks line and the footer share one bottom-anchored box, so the
+  // thanks line always sits above the footer however tall the bank details get.
+  footerArea: {
     position: "absolute",
     bottom: 36,
     left: 56,
     right: 56,
+  },
+  thanks: {
+    textAlign: "center",
+    color: "#cdd1d8",
+    fontSize: 22,
+    marginBottom: 14,
+  },
+  pageFooter: {
     borderTop: `1px solid ${COLOR_BORDER}`,
     paddingTop: 10,
     flexDirection: "row",
@@ -277,31 +279,37 @@ export function InvoiceDocumentEN({
 
         <Text style={styles.pleaseAdd}>Please add the invoice number to your payment description.</Text>
 
-        <Text style={styles.thanks}>Thank you for your business!</Text>
-
-        <View style={styles.pageFooter} fixed>
-          <View style={styles.footerCol}>
-            <Text style={styles.footerHeading}>Company contacts:</Text>
-            <Text>{settings.issuerName}</Text>
-            <Text>Reg. no: {settings.issuerTaxId}</Text>
-            <Text>VAT ID: {settings.issuerVatId}</Text>
-          </View>
-          <View style={styles.footerCol}>
-            <Text>{settings.issuerAddressLine}</Text>
-            <Text>
-              {settings.issuerPostalCode} {settings.issuerCity}
-            </Text>
-            <Text>{settings.issuerProvince}</Text>
-            <Text>{settings.issuerCountry}</Text>
-          </View>
-          <View style={styles.footerCol}>
-            <Text style={styles.footerHeading}>Bank account:</Text>
-            <Text>Beneficiary: {bank.beneficiary ?? settings.issuerName}</Text>
-            <Text>Bank name: {bank.bankName}</Text>
-            <Text>IBAN: {formatIban(bank.iban)}</Text>
-            <Text>SWIFT: {bank.swift}</Text>
-            {bank.address ? <Text>{bank.address}</Text> : null}
-            {bank.notes ? <Text>{bank.notes}</Text> : null}
+        <View style={styles.footerArea} fixed>
+          <Text
+            style={styles.thanks}
+            render={({ pageNumber, totalPages }) =>
+              pageNumber === totalPages ? "Thank you for your business!" : ""
+            }
+          />
+          <View style={styles.pageFooter}>
+            <View style={styles.footerCol}>
+              <Text style={styles.footerHeading}>Company contacts:</Text>
+              <Text>{settings.issuerName}</Text>
+              <Text>Reg. no: {settings.issuerTaxId}</Text>
+              <Text>VAT ID: {settings.issuerVatId}</Text>
+            </View>
+            <View style={styles.footerCol}>
+              <Text>{settings.issuerAddressLine}</Text>
+              <Text>
+                {settings.issuerPostalCode} {settings.issuerCity}
+              </Text>
+              <Text>{settings.issuerProvince}</Text>
+              <Text>{settings.issuerCountry}</Text>
+            </View>
+            <View style={styles.footerCol}>
+              <Text style={styles.footerHeading}>Bank account:</Text>
+              <Text>Beneficiary: {bank.beneficiary ?? settings.issuerName}</Text>
+              <Text>Bank name: {bank.bankName}</Text>
+              <Text>IBAN: {formatIban(bank.iban)}</Text>
+              <Text>SWIFT: {bank.swift}</Text>
+              {bank.address ? <Text>{bank.address}</Text> : null}
+              {bank.notes ? <Text>{bank.notes}</Text> : null}
+            </View>
           </View>
         </View>
       </Page>
@@ -450,31 +458,37 @@ export function InvoiceDocumentES({
           Indique el número de factura en el concepto de la transferencia.
         </Text>
 
-        <Text style={styles.thanks}>¡Gracias por su confianza!</Text>
-
-        <View style={styles.pageFooter} fixed>
-          <View style={styles.footerCol}>
-            <Text style={styles.footerHeading}>Datos del emisor:</Text>
-            <Text>{settings.issuerName}</Text>
-            <Text>NIF: {settings.issuerTaxId}</Text>
-            {settings.issuerPhone ? <Text>Tel.: {settings.issuerPhone}</Text> : null}
-          </View>
-          <View style={styles.footerCol}>
-            <Text>{settings.issuerAddressLine}</Text>
-            <Text>
-              {settings.issuerPostalCode} {settings.issuerCity}
-            </Text>
-            <Text>{settings.issuerProvince}</Text>
-            <Text>{countryNameES(settings.issuerCountry)}</Text>
-          </View>
-          <View style={styles.footerCol}>
-            <Text style={styles.footerHeading}>Datos bancarios:</Text>
-            <Text>Titular: {bank.beneficiary ?? settings.issuerName}</Text>
-            <Text>Banco: {bank.bankName}</Text>
-            <Text>IBAN: {formatIban(bank.iban)}</Text>
-            <Text>SWIFT: {bank.swift}</Text>
-            {bank.address ? <Text>{bank.address}</Text> : null}
-            {bank.notes ? <Text>{bank.notes}</Text> : null}
+        <View style={styles.footerArea} fixed>
+          <Text
+            style={styles.thanks}
+            render={({ pageNumber, totalPages }) =>
+              pageNumber === totalPages ? "¡Gracias por su confianza!" : ""
+            }
+          />
+          <View style={styles.pageFooter}>
+            <View style={styles.footerCol}>
+              <Text style={styles.footerHeading}>Datos del emisor:</Text>
+              <Text>{settings.issuerName}</Text>
+              <Text>NIF: {settings.issuerTaxId}</Text>
+              {settings.issuerPhone ? <Text>Tel.: {settings.issuerPhone}</Text> : null}
+            </View>
+            <View style={styles.footerCol}>
+              <Text>{settings.issuerAddressLine}</Text>
+              <Text>
+                {settings.issuerPostalCode} {settings.issuerCity}
+              </Text>
+              <Text>{settings.issuerProvince}</Text>
+              <Text>{countryNameES(settings.issuerCountry)}</Text>
+            </View>
+            <View style={styles.footerCol}>
+              <Text style={styles.footerHeading}>Datos bancarios:</Text>
+              <Text>Titular: {bank.beneficiary ?? settings.issuerName}</Text>
+              <Text>Banco: {bank.bankName}</Text>
+              <Text>IBAN: {formatIban(bank.iban)}</Text>
+              <Text>SWIFT: {bank.swift}</Text>
+              {bank.address ? <Text>{bank.address}</Text> : null}
+              {bank.notes ? <Text>{bank.notes}</Text> : null}
+            </View>
           </View>
         </View>
       </Page>

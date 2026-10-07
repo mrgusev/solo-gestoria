@@ -18,6 +18,7 @@ import {
   buildConsentUrl,
   defaultRedirectUri,
   exchangeCodeForRefreshToken,
+  originFromHeaders,
   OAUTH_CALLBACK_PATH,
 } from "@/lib/google-oauth";
 
@@ -106,17 +107,24 @@ function readSmtpForm(formData: FormData) {
 
 // Authenticate against the mail server without sending anything, so a wrong
 // App Password surfaces here rather than on the first real invoice. Verifies
-// what's in the form, including unsaved edits.
+// what's in the form, including unsaved edits — and saves them once they work,
+// since the redirect reloads the form from the DB and would otherwise drop the
+// just-typed password (secrets never render back into the form).
 async function testSmtpConnection(formData: FormData): Promise<void> {
   "use server";
   const stored = await prisma.settings.findUnique({ where: { id: 1 } });
   if (!stored) redirect("/settings?smtp=error&msg=" + encodeURIComponent("Run db:seed first"));
-  const candidate: Settings = { ...stored, ...readSmtpForm(formData) };
+  const smtp = readSmtpForm(formData);
+  const candidate: Settings = { ...stored, ...smtp };
   let error: string | null = null;
   try {
     await verifySmtp(candidate);
   } catch (err) {
     error = err instanceof Error ? err.message : String(err);
+  }
+  if (!error) {
+    await prisma.settings.update({ where: { id: 1 }, data: smtp });
+    revalidatePath("/settings");
   }
   redirect(
     error
@@ -128,10 +136,7 @@ async function testSmtpConnection(formData: FormData): Promise<void> {
 // The origin a browser actually reached us on — the standalone server sees its
 // own bind address, so the forwarded headers are the only reliable source.
 async function requestOrigin(): Promise<string> {
-  const h = await headers();
-  const proto = h.get("x-forwarded-proto") ?? "http";
-  const host = h.get("x-forwarded-host") ?? h.get("host") ?? "localhost:3010";
-  return `${proto}://${host}`;
+  return originFromHeaders(await headers());
 }
 
 // Save what's in the form, then bounce to Google's consent screen. Saving
@@ -236,7 +241,7 @@ export default async function SettingsPage({
       />
       {smtp === "ok" ? (
         <div className="mx-6 mt-6 rounded-md border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-900">
-          ✅ SMTP login succeeded{msg ? ` as ${msg}` : ""}. Invoices can be emailed.
+          ✅ SMTP login succeeded{msg ? ` as ${msg}` : ""} and the email settings were saved. Invoices can be emailed.
         </div>
       ) : null}
       {smtp === "error" ? (
