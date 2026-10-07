@@ -10,6 +10,7 @@ import { applyDeduction, defaultDeductiblePct } from "../deduction";
 import {
   updateInvoice as updateInvoiceCore,
   deleteInvoice as deleteInvoiceCore,
+  deleteWouldLeaveGap,
   InvoiceLockedError,
   type UpdateInvoiceArgs as InvoiceUpdateCore,
 } from "../invoice";
@@ -284,15 +285,20 @@ export async function describeDeleteInvoice(id: string): Promise<{
   });
   if (!invoice) throw new Error(`Invoice ${id} not found`);
   const state = invoiceLockState(invoice);
-  const locked = state.locked;
-  const lockReason = lockReasonText(state);
+  // A non-latest invoice is refused like a locked one: deleting it would
+  // leave a hole in the FACT series.
+  const latest = state.locked ? null : await deleteWouldLeaveGap(invoice.number);
+  const locked = state.locked || Boolean(latest);
+  const lockReason = latest
+    ? `only the latest invoice (${latest}) can be deleted, otherwise the numbering gets a gap — edit this one instead`
+    : lockReasonText(state);
   const eur = (c: number) => (c / 100).toFixed(2);
   const summary =
     `<b>🗑️ Proposed delete</b>\n` +
     `<i>${invoice.number} · ${invoice.date.toISOString().slice(0, 10)} · ${escHtml(invoice.client.name)} · €${eur(invoice.totalCents)}</i>\n\n` +
     (locked
-      ? `🔒 <b>Locked:</b> ${lockReason ?? "cannot delete"}`
-      : `<i>This permanently removes the invoice. The FACT number will not be reused.</i>`);
+      ? `🔒 <b>Can't delete:</b> ${lockReason ?? "cannot delete"}`
+      : `<i>This permanently removes the invoice. Its FACT number will be reused by the next invoice.</i>`);
   return { summary, locked, lockReason };
 }
 

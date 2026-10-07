@@ -521,7 +521,7 @@ const tools = [
   defineTool({
     name: "delete_invoice",
     description:
-      "Propose deletion of an invoice. THIS DOES NOT DELETE — sends a confirmation card. REFUSED on locked invoices.",
+      "Propose deletion of an invoice. THIS DOES NOT DELETE — sends a confirmation card. REFUSED on locked invoices and on any invoice that is not the latest of its year (the numbering must stay gapless).",
     parameters: z.object({
       id: z.string().describe("Invoice id (cuid) or number like 'FACT-2026-00003'"),
     }),

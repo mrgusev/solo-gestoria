@@ -4,7 +4,13 @@ import { revalidatePath } from "next/cache";
 import PageHeader from "@/components/PageHeader";
 import { prisma } from "@/lib/db";
 import { formatEUR } from "@/lib/money";
-import { deleteInvoice, lockInvoice, InvoiceLockedError } from "@/lib/invoice";
+import {
+  deleteInvoice,
+  deleteWouldLeaveGap,
+  lockInvoice,
+  InvoiceLockedError,
+  InvoiceNumberGapError,
+} from "@/lib/invoice";
 import { invoiceLockState, lockReasonText } from "@/lib/invoice-lock";
 import { rateToPct } from "@/lib/invoice-totals";
 import { vatTreatmentLabel } from "@/lib/clients";
@@ -23,7 +29,7 @@ async function deleteAction(formData: FormData) {
   try {
     await deleteInvoice(id);
   } catch (err) {
-    if (err instanceof InvoiceLockedError) {
+    if (err instanceof InvoiceLockedError || err instanceof InvoiceNumberGapError) {
       // Re-throwing surfaces the message to the user via Next's error UI.
       throw new Error(err.message);
     }
@@ -74,6 +80,7 @@ export default async function InvoiceDetailPage({
   const lockState = invoiceLockState(invoice);
   const isLocked = lockState.locked;
   const lockReason = lockReasonText(lockState);
+  const latestNumber = isLocked ? null : await deleteWouldLeaveGap(invoice.number);
 
   return (
     <>
@@ -135,7 +142,13 @@ export default async function InvoiceDetailPage({
                 <input type="hidden" name="id" value={invoice.id} />
                 <button
                   type="submit"
-                  className="rounded-md border border-red-200 px-3 py-1.5 text-sm text-red-700 hover:bg-red-50"
+                  disabled={Boolean(latestNumber)}
+                  title={
+                    latestNumber
+                      ? `Only the latest invoice (${latestNumber}) can be deleted — edit this one instead`
+                      : "Delete — its number will be reused by the next invoice"
+                  }
+                  className="rounded-md border border-red-200 px-3 py-1.5 text-sm text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   Delete
                 </button>

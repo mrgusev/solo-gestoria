@@ -122,8 +122,7 @@ const INVOICE_NUMBER_RE = /^FACT-(\d{4})-(\d{5})$/;
 // the given year (defaults to the current year). Robust against the settings
 // counter being out of sync after bulk imports or historical replays — the
 // source of truth is the actual max invoice number on disk PLUS the
-// settings.invoiceNumberSeq high-water mark (so deleting the latest invoice
-// doesn't cause its number to be reused).
+// settings.invoiceNumberSeq counter.
 export async function previewNextInvoiceNumber(year?: number): Promise<{
   year: number;
   seq: number;
@@ -142,9 +141,9 @@ export async function previewNextInvoiceNumber(year?: number): Promise<{
     const seq = Number(m[2]);
     if (seq > maxSeq) maxSeq = seq;
   }
-  // Respect the settings high-water mark for this year — prevents reuse after
-  // delete. e.g. if settings says (year, seq=13) and only 1..11 exist on
-  // disk because 12 was deleted, next is still 13.
+  // Respect the settings counter for this year, so a seq set by hand in
+  // /settings (e.g. to continue a series started elsewhere) wins. Deleting
+  // the latest invoice rolls the counter back, so this never skips a number.
   const settings = await prisma.settings.findUnique({ where: { id: 1 } });
   if (settings && settings.invoiceNumberYear === targetYear) {
     maxSeq = Math.max(maxSeq, settings.invoiceNumberSeq - 1);
@@ -443,6 +442,34 @@ export async function updateInvoice(args: UpdateInvoiceArgs): Promise<{ id: stri
   return updated;
 }
 
+export class InvoiceNumberGapError extends Error {
+  constructor(public invoiceNumber: string, public latestNumber: string) {
+    super(
+      `Invoice ${invoiceNumber} can't be deleted: only the latest invoice of the series ` +
+        `(${latestNumber}) can be, otherwise the numbering gets a gap. Edit it instead.`
+    );
+    this.name = "InvoiceNumberGapError";
+  }
+}
+
+// The FACT-YYYY-NNNNN series has to stay gapless (art. 6.1.a RD 1619/2012),
+// so only the newest invoice of its year may be deleted — its number is then
+// handed back. Returns the latest number when `number` isn't it, else null.
+export async function deleteWouldLeaveGap(number: string): Promise<string | null> {
+  const m = INVOICE_NUMBER_RE.exec(number);
+  if (!m) return null;
+  const year = Number(m[1]);
+  const rows = await prisma.invoice.findMany({
+    where: { number: { startsWith: `FACT-${year}-` } },
+    select: { number: true },
+  });
+  let latest = number;
+  for (const r of rows) {
+    if (INVOICE_NUMBER_RE.test(r.number) && r.number > latest) latest = r.number;
+  }
+  return latest === number ? null : latest;
+}
+
 export async function deleteInvoice(id: string): Promise<void> {
   const { isInvoiceLocked, invoiceLockState, lockReasonText } = await import("./invoice-lock");
   const existing = await prisma.invoice.findUnique({ where: { id } });
@@ -451,7 +478,17 @@ export async function deleteInvoice(id: string): Promise<void> {
     const reason = lockReasonText(invoiceLockState(existing)) ?? "locked";
     throw new InvoiceLockedError(existing.number, reason);
   }
+  const latest = await deleteWouldLeaveGap(existing.number);
+  if (latest) throw new InvoiceNumberGapError(existing.number, latest);
   await prisma.invoice.delete({ where: { id } });
+  // Hand the number back so the next invoice reuses it.
+  const m = INVOICE_NUMBER_RE.exec(existing.number);
+  if (m) {
+    await prisma.settings.updateMany({
+      where: { id: 1, invoiceNumberYear: Number(m[1]) },
+      data: { invoiceNumberSeq: Number(m[2]) },
+    });
+  }
   // Best-effort unlink — fine if the file never existed.
   if (existing.pdfPath) {
     const abs = path.resolve(UPLOAD_DIR, existing.pdfPath);
