@@ -157,5 +157,7 @@ export function taxPresetForCountry(
 }
 
 export function vatTreatmentLabel(t: VatTreatment): string {
+  // Stripe-only treatment — deliberately not offered in the client form.
+  if (t === "OSS_EU_B2C") return "EU consumer (OSS)";
   return VAT_TREATMENTS.find((v) => v.value === t)?.label ?? t;
 }

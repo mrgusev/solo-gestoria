@@ -78,6 +78,10 @@ model Settings {
   // UI accent palette. Name of a preset from src/lib/palettes.ts. Drives the
   // --accent-* CSS variables via a runtime <style> tag in the root layout.
   accentPalette            String    @default("coral")
+  // Stripe sync status (the key itself lives in the STRIPE_SECRET_KEY env var)
+  stripeLastSyncAt         DateTime?
+  stripeLastSyncSummary    String?
+  stripeLastSyncError      String?
   updatedAt                DateTime  @updatedAt
 }
 
@@ -112,6 +116,12 @@ enum VatTreatment {
   DOMESTIC_ES // Spanish client — IVA repercutido + retención IRPF
   INTRA_EU_REVERSE_CHARGE // EU business — exempt (art. 25), MOD 303 [59] + MOD 349
   EXPORT_NON_EU // outside the EU — exempt, never in MOD 349
+  OSS_EU_B2C // EU consumer (Stripe only) — destination-country VAT via OSS, MOD 369 + MOD 303 [123]
+}
+
+enum InvoiceSource {
+  MANUAL
+  STRIPE
 }
 
 model Client {
@@ -133,6 +143,8 @@ model Client {
   defaultVatRate    Float              @default(0)
   irpfRetentionRate Float              @default(0)
   invoiceLocale     String             @default("en") // "en" | "es" — picks the PDF template
+  // Set for clients auto-created from Stripe customers (see src/lib/stripe-sync.ts)
+  stripeCustomerId  String?            @unique
   invoices          Invoice[]
   recurring         RecurringInvoice[]
   createdAt         DateTime           @default(now())
@@ -205,6 +217,12 @@ model Invoice {
   // client, whether from the recurring cron or the button on the invoice page.
   emailedAt     DateTime?
   emailedTo     String? // recipient list actually used
+  source        InvoiceSource  @default(MANUAL)
+  // Country whose VAT was charged (ES for domestic, the customer's for OSS).
+  vatCountryCode String?
+  // Stripe invoice id (in_…) or credit note id (cn_…) for STRIPE rows.
+  stripeId      String?        @unique
+  stripeLivemode Boolean?
   lines         InvoiceLine[]
   recurringRuns RecurringRun[]
   createdAt     DateTime       @default(now())
@@ -325,6 +343,7 @@ enum ExpenseSource {
   UPLOAD
   AUTO_RETA
   MANUAL
+  STRIPE_FEES
 }
 
 model Expense {
@@ -351,6 +370,8 @@ model Expense {
   notes              String?
   // Helps idempotency for auto-RETA: one per (year,month) when source = AUTO_RETA
   retaYearMonth      String?         @unique // e.g. "2026-05" only set for AUTO_RETA rows
+  // One aggregated row per month of Stripe processing fees (source = STRIPE_FEES)
+  stripeFeeMonth     String?         @unique // e.g. "2026-06"
   createdAt          DateTime        @default(now())
   updatedAt          DateTime        @updatedAt
 

@@ -376,6 +376,31 @@ verified under Gmail's _Send mail as_, otherwise Google rewrites the header.
 Mail sent over SMTP doesn't land in Gmail's Sent folder, so **Bcc myself** is
 on by default to keep an audit copy.
 
+## Stripe sync
+
+With `STRIPE_SECRET_KEY` set, the web app pulls from Stripe on boot and every
+`STRIPE_SYNC_INTERVAL_MIN` minutes (default 60). You can also run
+`npm run stripe:sync` or press _Sync now_ in `/settings`.
+
+| Stripe                         | Becomes                                           |
+| ------------------------------ | ------------------------------------------------- |
+| Invoice (open/paid/uncollect.) | Invoice, `source = STRIPE`, read-only, Stripe PDF |
+| Credit note                    | Negative invoice (rectificativa)                  |
+| Voided invoice                 | Removed, unless its quarter is already filed      |
+| Processing fees                | One `BANK_FEES` expense per month                 |
+| Customer                       | Client (hidden from the invoice editor)           |
+
+Each invoice's treatment comes from the tax Stripe actually charged:
+
+- **Spanish IVA** → `DOMESTIC_ES`: MOD 303 [07]–[09] / [27]
+- **Another EU country's VAT** → `OSS_EU_B2C`: MOD 369 table + MOD 303 [123]
+- **No VAT, EU business with VAT ID** → `INTRA_EU_REVERSE_CHARGE`: [59] + MOD 349
+- **No VAT, non-EU customer** → `EXPORT_NON_EU`
+
+Use a **restricted live key** with read access to Invoices, Credit notes,
+Customers, Tax rates and Balance transactions. Test-mode keys are refused
+unless `STRIPE_ALLOW_TEST_DATA=true`, so sandbox sales never reach real books.
+
 ## Filing quarterly forms
 
 1. Open `/reports/<year>/<quarter>` — review each form's box values.

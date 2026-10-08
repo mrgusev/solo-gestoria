@@ -15,7 +15,8 @@ function isoDate(d: Date): string {
 export default async function NewInvoicePage() {
   const [settings, clients, bankAccounts] = await Promise.all([
     prisma.settings.findUnique({ where: { id: 1 } }),
-    prisma.client.findMany({ orderBy: { name: "asc" } }),
+    // Stripe customers are invoiced by Stripe, not from this editor.
+    prisma.client.findMany({ where: { stripeCustomerId: null }, orderBy: { name: "asc" } }),
     listBankAccounts(),
   ]);
   if (!settings) return <div className="p-6 text-sm text-red-600">Run db:seed first.</div>;

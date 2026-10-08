@@ -201,12 +201,62 @@ export default async function QuarterReportPage({
           <BoxRow box="45" label="Total a deducir" value={report.mod303.box45} />
           <BoxRow box="46" label="Resultado régimen general (27 − 45)" value={report.mod303.box46} />
           <BoxRow box="59" label="Entregas intracomunitarias (bienes y servicios)" value={report.mod303.box59} />
+          {report.mod303.box123 !== 0 ? (
+            <BoxRow box="123" label="No sujetas por localización, acogidas a OSS (B2C UE)" value={report.mod303.box123} />
+          ) : null}
           <BoxRow box="64" label="Suma resultados (46 + 58 + 76)" value={report.mod303.box64} muted />
           <BoxRow box="66" label="Atribuible al Estado (100%)" value={report.mod303.box66} muted />
           <BoxRow box="69" label="Resultado autoliquidación" value={report.mod303.box69} muted />
           <BoxRow box="71" label="Resultado final" value={report.mod303.box71} muted />
           <BoxRow box="72" label="A compensar (si 71 negativo)" value={report.mod303.box72} bold />
         </FormCard>
+
+        {report.oss.length > 0 ? (
+          <FormCard
+            title="MOD 369 — OSS (ventanilla única)"
+            subtitle="EU consumer sales (Stripe) taxed at the customer's country rate. Declared via OSS, not in MOD 303."
+            submission={
+              <>
+                <p>
+                  Submit at{" "}
+                  <a
+                    className="underline"
+                    href="https://sede.agenciatributaria.gob.es/Sede/procedimientoini/GI49.shtml"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Sede Electrónica → Modelo 369
+                  </a>
+                  , period <strong>{year} {q}T</strong>.
+                </p>
+                <p className="mt-2 text-amber-700">
+                  Deadline: last day of the month following the quarter (Apr 30, Jul 31, Oct 31, Jan 31).
+                </p>
+              </>
+            }
+          >
+            <table className="w-full text-sm">
+              <thead className="text-left text-xs uppercase tracking-wide text-neutral-500">
+                <tr>
+                  <th className="px-4 py-2">Country</th>
+                  <th className="px-4 py-2 text-right">Rate</th>
+                  <th className="px-4 py-2 text-right">Base</th>
+                  <th className="px-4 py-2 text-right">VAT</th>
+                </tr>
+              </thead>
+              <tbody>
+                {report.oss.map((row) => (
+                  <tr key={`${row.countryCode}:${row.rate}`} className="border-t border-neutral-200">
+                    <td className="px-4 py-2">{row.countryCode}</td>
+                    <td className="px-4 py-2 text-right tabular-nums">{Math.round(row.rate * 10000) / 100}%</td>
+                    <td className="px-4 py-2 text-right tabular-nums">{formatEUR(row.baseCents)}</td>
+                    <td className="px-4 py-2 text-right tabular-nums">{formatEUR(row.cuotaCents)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </FormCard>
+        ) : null}
 
         <FormCard
           title="MOD 349 — Intra-EU operations recap"

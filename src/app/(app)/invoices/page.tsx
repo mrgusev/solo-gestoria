@@ -54,7 +54,11 @@ export default async function InvoicesPage() {
                       <td className="px-4 py-2 font-medium">
                         <Link href={`/invoices/${i.id}`} className="block">
                           {i.number}
-                          {locked ? (
+                          {i.source === "STRIPE" ? (
+                            <span className="ml-2 rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-neutral-600">
+                              Stripe
+                            </span>
+                          ) : locked ? (
                             <span
                               className="ml-2 text-[10px] uppercase tracking-wide text-neutral-500"
                               title="Past MOD 303 filing deadline — amend via factura rectificativa"

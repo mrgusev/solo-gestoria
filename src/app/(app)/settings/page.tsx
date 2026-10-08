@@ -8,6 +8,7 @@ import { utilityDeductiblePct } from "@/lib/deduction";
 import { recomputeAllExpenseDeductions } from "@/lib/recompute";
 import { PALETTE_NAMES, PALETTES, DEFAULT_PALETTE } from "@/lib/palettes";
 import { revalidatePath } from "next/cache";
+import { stripeConfigured, syncStripe } from "@/lib/stripe-sync";
 import { redirect } from "next/navigation";
 import { headers } from "next/headers";
 import type { Settings } from "@prisma/client";
@@ -200,6 +201,13 @@ async function disconnectGoogle(): Promise<void> {
     data: { googleRefreshToken: null, smtpAuthType: "PASSWORD" },
   });
   redirect("/settings?google=disconnected");
+}
+
+async function syncStripeNow(): Promise<void> {
+  "use server";
+  // Errors are recorded on Settings.stripeLastSyncError and shown below.
+  await syncStripe().catch(() => {});
+  revalidatePath("/", "layout");
 }
 
 function clamp(n: number, lo: number, hi: number): number {
@@ -733,6 +741,50 @@ export default async function SettingsPage({
             Save settings
           </button>
         </div>
+      </form>
+
+      <form action={syncStripeNow} className="px-6 pb-6 max-w-2xl">
+        <Section title="Stripe">
+          {stripeConfigured() ? (
+            <>
+              <p className="text-xs text-neutral-500">
+                Invoices, credit notes and processing fees are pulled from Stripe every{" "}
+                {Math.max(5, Number(process.env.STRIPE_SYNC_INTERVAL_MIN ?? 60) || 60)} min and
+                counted in the quarterly reports. Imported invoices are read-only — correct them
+                in Stripe with a credit note.
+              </p>
+              <ReadField
+                label="Last sync"
+                value={
+                  s.stripeLastSyncAt
+                    ? s.stripeLastSyncAt.toISOString().replace("T", " ").slice(0, 16) + " UTC"
+                    : "never"
+                }
+              />
+              {s.stripeLastSyncError ? (
+                <div className="rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-800 whitespace-pre-line">
+                  {s.stripeLastSyncError}
+                </div>
+              ) : s.stripeLastSyncSummary ? (
+                <div className="rounded-md border border-neutral-200 bg-neutral-50 p-3 text-xs text-neutral-700 whitespace-pre-line">
+                  {s.stripeLastSyncSummary}
+                </div>
+              ) : null}
+              <button
+                type="submit"
+                className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm hover:bg-neutral-50"
+              >
+                Sync now
+              </button>
+            </>
+          ) : (
+            <p className="text-xs text-neutral-500">
+              Set <code className="rounded bg-neutral-100 px-1 py-0.5">STRIPE_SECRET_KEY</code> (a
+              restricted key with read access to invoices, credit notes, customers, tax rates and
+              balance transactions) and restart to import Stripe sales automatically.
+            </p>
+          )}
+        </Section>
       </form>
     </>
   );

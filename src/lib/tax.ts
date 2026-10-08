@@ -34,6 +34,7 @@ type InvoiceRow = {
   vatCents: number;
   irpfCents: number;
   vatTreatment: VatTreatment;
+  vatCountryCode: string | null;
   lines: { vatRate: number; netCents: number }[];
 };
 
@@ -58,6 +59,7 @@ async function fetchInvoices(start: Date, endExclusive: Date): Promise<InvoiceRo
       vatCents: true,
       irpfCents: true,
       vatTreatment: true,
+      vatCountryCode: true,
       lines: { select: { vatRate: true, netCents: true } },
     },
   });
@@ -112,6 +114,7 @@ export type QuarterReport = {
     box45: number; // total a deducir
     box46: number; // resultado régimen general (27 - 45)
     box59: number; // entregas intracomunitarias de bienes y servicios
+    box123: number; // no sujetas por localización, acogidas a OSS (EU B2C via Stripe)
     box64: number; // suma resultados (46 + 58 + 76); 58, 76 = 0 for us
     box66: number; // atribuible al Estado (= 64 * 100%)
     box69: number; // resultado autoliquidación
@@ -126,6 +129,8 @@ export type QuarterReport = {
     clave: "S" | "E" | "A" | "T" | "C" | "M" | "H" | "R" | "D"; // S = services rendered
     baseCents: number;
   }>;
+  // MOD 369 (OSS) — EU consumer sales taxed at the customer's country rate.
+  oss: Array<{ countryCode: string; rate: number; baseCents: number; cuotaCents: number }>;
 };
 
 export async function computeQuarterReport(
@@ -184,6 +189,25 @@ export async function computeQuarterReport(
   const box59 = qInvoices
     .filter((r) => r.vatTreatment === "INTRA_EU_REVERSE_CHARGE")
     .reduce((s, r) => s + r.subtotalCents, 0);
+
+  // OSS sales: not Spanish IVA. Their base goes to [123]; the per-country
+  // VAT is declared in MOD 369.
+  const ossByKey = new Map<string, { countryCode: string; rate: number; baseCents: number }>();
+  let box123 = 0;
+  for (const inv of qInvoices) {
+    if (inv.vatTreatment !== "OSS_EU_B2C") continue;
+    box123 += inv.subtotalCents;
+    for (const line of inv.lines) {
+      const cc = inv.vatCountryCode ?? "??";
+      const key = `${cc}:${line.vatRate}`;
+      const cur = ossByKey.get(key) ?? { countryCode: cc, rate: line.vatRate, baseCents: 0 };
+      cur.baseCents += line.netCents;
+      ossByKey.set(key, cur);
+    }
+  }
+  const oss = Array.from(ossByKey.values())
+    .sort((a, b) => a.countryCode.localeCompare(b.countryCode) || a.rate - b.rate)
+    .map((g) => ({ ...g, cuotaCents: Math.round(g.baseCents * g.rate) }));
 
   // IVA devengado — group the domestic lines by rate, exactly as the form does.
   const devengadoByRate = new Map<number, number>();
@@ -275,6 +299,7 @@ export async function computeQuarterReport(
       box45,
       box46,
       box59,
+      box123,
       box64,
       box66,
       box69,
@@ -282,5 +307,6 @@ export async function computeQuarterReport(
       box72,
     },
     mod349,
+    oss,
   };
 }

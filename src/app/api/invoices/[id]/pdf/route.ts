@@ -47,6 +47,13 @@ export async function GET(
     }
   }
 
+  // Stripe invoices are issued by Stripe — never re-render them with our template.
+  if (invoice.source === "STRIPE") {
+    return new Response("Stripe PDF not downloaded yet — it is fetched on the next sync.", {
+      status: 404,
+    });
+  }
+
   const pdf = await renderInvoicePdf({ invoice, settings });
   return new Response(new Uint8Array(pdf), { headers });
 }

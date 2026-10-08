@@ -23,7 +23,8 @@ export default async function EditInvoicePage({
       where: { id },
       include: { lines: { orderBy: { position: "asc" } } },
     }),
-    prisma.client.findMany({ orderBy: { name: "asc" } }),
+    // Stripe customers are invoiced by Stripe, not from this editor.
+    prisma.client.findMany({ where: { stripeCustomerId: null }, orderBy: { name: "asc" } }),
     prisma.settings.findUnique({ where: { id: 1 } }),
     // Archived accounts included: an invoice that already points at one must
     // keep showing it rather than silently switching to another account.

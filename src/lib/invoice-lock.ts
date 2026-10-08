@@ -5,6 +5,8 @@
 // approximate "filed" with the MOD 303 filing deadline of the invoice's
 // quarter — 20 days after the quarter ends (Jan 30 for Q4).
 //
+// Stripe-imported invoices are always locked: Stripe is the source of truth.
+//
 // On top of that, the user can manually lock an invoice early by setting
 // `invoice.lockedAt` (e.g., once they've sent the PDF to the client).
 
@@ -12,6 +14,7 @@ import { quarterOf } from "./tax";
 
 export type LockState =
   | { locked: false }
+  | { locked: true; reason: "stripe" }
   | { locked: true; reason: "manual"; lockedAt: Date }
   | { locked: true; reason: "filing_deadline"; deadline: Date };
 
@@ -31,7 +34,10 @@ export function legalLockDate(invoiceDate: Date): Date {
 export function invoiceLockState(invoice: {
   date: Date;
   lockedAt: Date | null;
+  source?: string;
 }): LockState {
+  // Stripe is the system of record for its invoices; the sync overwrites them.
+  if (invoice.source === "STRIPE") return { locked: true, reason: "stripe" };
   if (invoice.lockedAt) {
     return { locked: true, reason: "manual", lockedAt: invoice.lockedAt };
   }
@@ -45,12 +51,16 @@ export function invoiceLockState(invoice: {
 export function isInvoiceLocked(invoice: {
   date: Date;
   lockedAt: Date | null;
+  source?: string;
 }): boolean {
   return invoiceLockState(invoice).locked;
 }
 
 export function lockReasonText(state: LockState): string | null {
   if (!state.locked) return null;
+  if (state.reason === "stripe") {
+    return "Imported from Stripe. To amend it, issue a credit note in Stripe — it syncs here as a rectificativa.";
+  }
   if (state.reason === "manual") {
     return `Marked final on ${state.lockedAt.toISOString().slice(0, 10)}.`;
   }

@@ -360,7 +360,7 @@ export function buildMod303(args: {
   p3 += amountSigned(0); // [60] exportaciones
   p3 += amountSigned(0); // [120]
   p3 += amountSigned(0); // [122]
-  p3 += amountSigned(0); // [123]
+  p3 += amountSigned(report.mod303.box123); // [123] no sujetas, acogidas a OSS
   p3 += amountSigned(0); // [124]
   p3 += amountSigned(0) + amountSigned(0); // [62]/[63]
   p3 += amountSigned(0) + amountSigned(0); // [74]/[75]

@@ -12,6 +12,7 @@
     "db:seed": "tsx prisma/seed.ts",
     "db:reset": "prisma db push --force-reset && npm run db:seed",
     "bot": "tsx scripts/bot-poll.ts",
+    "stripe:sync": "tsx scripts/stripe-sync.ts",
     "migrate:historical": "tsx scripts/migrate-historical.ts",
     "postinstall": "prisma generate --no-hints || true"
   },
