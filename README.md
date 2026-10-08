@@ -378,8 +378,9 @@ on by default to keep an audit copy.
 
 ## Stripe sync
 
-With `STRIPE_SECRET_KEY` set, the web app pulls from Stripe on boot and every
-`STRIPE_SYNC_INTERVAL_MIN` minutes (default 60). You can also run
+With `STRIPE_SECRET_KEY` set, the `bot` worker pulls from Stripe on start and
+every `STRIPE_SYNC_INTERVAL_MIN` minutes (default 60) — even without a
+Telegram token. You can also run
 `npm run stripe:sync` or press _Sync now_ in `/settings`.
 
 | Stripe                         | Becomes                                           |

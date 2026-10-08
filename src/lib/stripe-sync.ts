@@ -117,6 +117,11 @@ export function stripeConfigured(): boolean {
   return !!process.env.STRIPE_SECRET_KEY?.trim();
 }
 
+// Minutes between automatic syncs (run by the bot worker's cron).
+export function stripeSyncIntervalMin(): number {
+  return Math.max(5, Number(process.env.STRIPE_SYNC_INTERVAL_MIN ?? 60) || 60);
+}
+
 async function get<T>(pathAndQuery: string): Promise<T> {
   const res = await fetch(`${API}${pathAndQuery}`, {
     headers: { Authorization: `Bearer ${stripeKey()}` },
@@ -295,7 +300,7 @@ async function upsertClient(
     taxIds.find((t) => t.type === "es_cif")?.value.toUpperCase() ??
     (euVat?.startsWith("ES") ? euVat.slice(2) : null);
   const data = {
-    name: inv.customer_name || inv.customer_email || custId,
+    name: (inv.customer_name || inv.customer_email || custId).trim(),
     taxId: esNif,
     vatId: euVat,
     countryCode: cc,
@@ -307,9 +312,14 @@ async function upsertClient(
     vatTreatment: treatment,
     invoiceLocale: cc === "ES" ? "es" : "en",
   };
+  // One Stripe customer can be billed under different identities over time
+  // (a person, later their company with a NIF). Each identity is its own
+  // client, so an invoice always shows who it was actually issued to.
+  const identity = (esNif ?? euVat ?? data.name).toUpperCase().replace(/\s+/g, " ");
+  const key = `${custId}|${identity}`;
   const client = await prisma.client.upsert({
-    where: { stripeCustomerId: custId },
-    create: { ...data, stripeCustomerId: custId, notes: "Created from Stripe" },
+    where: { stripeCustomerId: key },
+    create: { ...data, stripeCustomerId: key, notes: `Created from Stripe customer ${custId}` },
     update: data,
     select: { id: true },
   });
@@ -431,7 +441,8 @@ export type StripeSyncResult = {
 };
 
 async function syncInvoices(result: StripeSyncResult): Promise<void> {
-  const invoices = await listAll<StripeInvoice>("invoices");
+  // Oldest first, so a client row ends up with its most recent details.
+  const invoices = (await listAll<StripeInvoice>("invoices")).sort((a, b) => a.created - b.created);
   for (const inv of invoices) {
     const label = inv.number ?? inv.id;
     if (inv.status === "draft") continue;
@@ -587,6 +598,10 @@ async function runSync(): Promise<StripeSyncResult> {
   await syncInvoices(result);
   await syncCreditNotes(result);
   await syncFees(result);
+  // Drop Stripe clients no invoice points at any more (e.g. after a void).
+  await prisma.client.deleteMany({
+    where: { stripeCustomerId: { not: null }, invoices: { none: {} }, recurring: { none: {} } },
+  });
   return result;
 }
 

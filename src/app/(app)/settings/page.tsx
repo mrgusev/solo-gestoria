@@ -8,7 +8,7 @@ import { utilityDeductiblePct } from "@/lib/deduction";
 import { recomputeAllExpenseDeductions } from "@/lib/recompute";
 import { PALETTE_NAMES, PALETTES, DEFAULT_PALETTE } from "@/lib/palettes";
 import { revalidatePath } from "next/cache";
-import { stripeConfigured, syncStripe } from "@/lib/stripe-sync";
+import { stripeConfigured, stripeSyncIntervalMin, syncStripe } from "@/lib/stripe-sync";
 import { redirect } from "next/navigation";
 import { headers } from "next/headers";
 import type { Settings } from "@prisma/client";
@@ -749,7 +749,7 @@ export default async function SettingsPage({
             <>
               <p className="text-xs text-neutral-500">
                 Invoices, credit notes and processing fees are pulled from Stripe every{" "}
-                {Math.max(5, Number(process.env.STRIPE_SYNC_INTERVAL_MIN ?? 60) || 60)} min and
+                {stripeSyncIntervalMin()} min (by the bot worker) and
                 counted in the quarterly reports. Imported invoices are read-only — correct them
                 in Stripe with a credit note.
               </p>

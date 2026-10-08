@@ -18,6 +18,7 @@ import { parseExpensePdf } from "../src/lib/expense-parser";
 import { transcribeVoice } from "../src/lib/voice-transcribe";
 import { dueReminders, markSent, upcomingDeadlines } from "../src/lib/reminders";
 import { ensureRetaExpenseForMonth } from "../src/lib/reta";
+import { stripeConfigured, stripeSyncIntervalMin, summarizeSync, syncStripe } from "../src/lib/stripe-sync";
 import {
   claimDueOccurrences,
   failRecurringRun,
@@ -78,7 +79,27 @@ const BOT_COMMANDS: tg.BotCommand[] = [
 ];
 
 async function main() {
-  const { token, allowedChatIds } = await loadConfig();
+  // Stripe sync cron — started before the Telegram config is read so it runs
+  // even when no bot token is set. Lives here rather than in the Next.js
+  // server: better-sqlite3 crashed the web process when driven from
+  // instrumentation.ts.
+  if (stripeConfigured()) {
+    console.log(`[bot] stripe cron: every ${stripeSyncIntervalMin()} min`);
+    void runStripeSync();
+    setInterval(() => { void runStripeSync(); }, stripeSyncIntervalMin() * 60 * 1000);
+  }
+
+  let config: Awaited<ReturnType<typeof loadConfig>>;
+  try {
+    config = await loadConfig();
+  } catch (err) {
+    // No Telegram configured: stay up for the Stripe cron instead of exiting
+    // (which would crash-loop and re-sync on every container restart).
+    if (!stripeConfigured()) throw err;
+    console.warn(`[bot] telegram disabled: ${(err as Error).message}`);
+    return;
+  }
+  const { token, allowedChatIds } = config;
   const me = await tg.getMe(token);
   try {
     await tg.setMyCommands(token, BOT_COMMANDS);
@@ -281,6 +302,14 @@ async function runMonthlyRetaCron(now: Date = new Date()): Promise<void> {
     }
   } catch (err) {
     console.error("[bot] reta cron failed:", err);
+  }
+}
+
+async function runStripeSync(): Promise<void> {
+  try {
+    console.log(`[bot] stripe cron: ${summarizeSync(await syncStripe())}`);
+  } catch (err) {
+    console.error("[bot] stripe cron failed:", (err as Error).message ?? err);
   }
 }
 
